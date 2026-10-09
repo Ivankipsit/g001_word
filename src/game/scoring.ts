@@ -1,4 +1,5 @@
 import { EnglishWorld } from "@/dictionary/english";
+import { RARITY_SCORE_BONUS } from "@/game/rarity";
 import type { ScoreBreakdown } from "@/game/types";
 
 /**
@@ -27,9 +28,7 @@ export function scoreWord(
   }
 
   const rarity = EnglishWorld.getRarity(w);
-  if (rarity === "uncommon") rareLetterBonus += 5;
-  if (rarity === "rare") rareLetterBonus += 15;
-  if (rarity === "epic") rareLetterBonus += 30;
+  if (rarity) rareLetterBonus += RARITY_SCORE_BONUS[rarity];
 
   const firstDiscoveryBonus = opts.isFirstDiscovery
     ? Math.max(12, Math.floor(base * 0.5))

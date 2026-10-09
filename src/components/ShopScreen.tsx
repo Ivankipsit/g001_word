@@ -5,7 +5,7 @@ import {
   Box,
   Button,
   Chip,
-  List,
+  Grid,
   ListItem,
   ListItemText,
   Stack,
@@ -55,7 +55,7 @@ export function ShopScreen() {
 
   if (!hasIdle && !hasLetters) {
     return (
-      <Box sx={{ px: 2, pt: 2, pb: 2 }}>
+      <Box sx={{ px: { xs: 2, md: 3 }, pt: 2, pb: 2 }}>
         <Typography variant="h5" sx={{ fontWeight: 800, mb: 2 }}>
           Shop
         </Typography>
@@ -68,10 +68,11 @@ export function ShopScreen() {
   }
 
   return (
-    <Box sx={{ px: 2, pt: 2, pb: 2 }}>
+    <Box sx={{ px: { xs: 2, md: 3 }, pt: 2, pb: 2 }}>
       <Stack
-        direction="row"
-        sx={{ mb: 1.5, justifyContent: "space-between", alignItems: "center" }}
+        direction={{ xs: "column", sm: "row" }}
+        spacing={1}
+        sx={{ mb: 1.5, justifyContent: "space-between", alignItems: { xs: "flex-start", sm: "center" } }}
       >
         <Typography variant="h5" sx={{ fontWeight: 800 }}>
           Shop
@@ -108,19 +109,20 @@ export function ShopScreen() {
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
             Earn coins while you play and offline (up to 8 hours).
           </Typography>
-          <List disablePadding>
+          <Grid container spacing={1}>
             {GENERATORS.map((g) => {
               const owned = generators[g.id] ?? 0;
               const cost = generatorCost(g, owned);
               const maxed = g.maxOwned != null && owned >= g.maxOwned;
               const canBuy = !maxed && coins >= cost;
               return (
+                <Grid key={g.id} size={{ xs: 12, md: 6 }}>
                 <ListItem
-                  key={g.id}
+                  component="div"
                   sx={{
+                    height: "100%",
                     bgcolor: "background.paper",
                     borderRadius: 2,
-                    mb: 1,
                     border: "1px solid",
                     borderColor: "divider",
                     flexWrap: "wrap",
@@ -155,9 +157,10 @@ export function ShopScreen() {
                     sx={{ pr: 10 }}
                   />
                 </ListItem>
+                </Grid>
               );
             })}
-          </List>
+          </Grid>
         </Box>
       )}
 
@@ -178,15 +181,7 @@ export function ShopScreen() {
               >
                 Owned · mastery
               </Typography>
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(148px, 1fr))",
-                  gap: 1,
-                  mb: 2.5,
-                  mt: 0.5,
-                }}
-              >
+              <Grid container spacing={1} sx={{ mb: 2.5, mt: 0.5 }}>
                 {ownedLetters.map((item) => {
                   const maxed = item.level >= item.maxLevel;
                   const canBuy = !maxed && coins >= item.cost;
@@ -194,9 +189,10 @@ export function ShopScreen() {
                     ? EnglishWorld.rareLetters.has(item.letter)
                     : false;
                   return (
+                    <Grid key={item.id} size={{ xs: 6, sm: 4, md: 3, lg: 2 }}>
                     <Box
-                      key={item.id}
                       sx={{
+                        height: "100%",
                         p: 1.5,
                         borderRadius: 2,
                         bgcolor: "background.paper",
@@ -244,9 +240,10 @@ export function ShopScreen() {
                         {maxed ? "Maxed" : `Upgrade · ${item.cost} ✦`}
                       </Button>
                     </Box>
+                    </Grid>
                   );
                 })}
-              </Box>
+              </Grid>
             </>
           )}
 
@@ -258,23 +255,17 @@ export function ShopScreen() {
               >
                 Locked
               </Typography>
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(148px, 1fr))",
-                  gap: 1,
-                  mt: 0.5,
-                }}
-              >
+              <Grid container spacing={1} sx={{ mt: 0.5 }}>
                 {lockedLetters.map((item) => {
                   const canBuy = coins >= item.cost;
                   const rare = item.letter
                     ? EnglishWorld.rareLetters.has(item.letter)
                     : false;
                   return (
+                    <Grid key={item.id} size={{ xs: 6, sm: 4, md: 3, lg: 2 }}>
                     <Box
-                      key={item.id}
                       sx={{
+                        height: "100%",
                         p: 1.5,
                         borderRadius: 2,
                         bgcolor: "action.hover",
@@ -312,9 +303,10 @@ export function ShopScreen() {
                         Unlock · {item.cost} ✦
                       </Button>
                     </Box>
+                    </Grid>
                   );
                 })}
-              </Box>
+              </Grid>
             </>
           )}
         </Box>

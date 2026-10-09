@@ -1,19 +1,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { GameMode, GameSave, ModeSave, ThemePreference } from "@/game/types";
+import type { GameMode, ModeSave, PlayerProgress, ThemePreference } from "@/game/types";
 import { ALL_MODES, SAVE_VERSION } from "@/game/types";
-
-export interface RemoteGameSaveRow {
-  user_id: string;
-  mode: GameMode;
-  save: ModeSave;
-  save_version: number;
-  updated_at: string;
-}
+import { mergeModeSave, sameModeSave } from "@/game/saveMerge";
+import { normalizeProgress } from "@/game/progress";
 
 function normalizeModeSave(save: ModeSave, mode: GameMode): ModeSave {
   return {
     started: Boolean(save.started),
     mode: save.mode ?? mode,
+    runId: save.runId,
     keystoneLetter: save.keystoneLetter,
     letters: Array.isArray(save.letters) ? save.letters : [],
     letterLevels: save.letterLevels ?? {},
@@ -41,11 +36,24 @@ function normalizeModeSave(save: ModeSave, mode: GameMode): ModeSave {
     comboExpiresAt: save.comboExpiresAt ?? null,
     heatPeakCombo: save.heatPeakCombo,
     echoLastLetter: save.echoLastLetter ?? null,
+    wordleLength: save.wordleLength,
+    wordleSecret: save.wordleSecret,
+    wordleGuesses: save.wordleGuesses,
+    pinLocks: save.pinLocks,
+    pinSecret: save.pinSecret,
+    pinSlots: save.pinSlots,
+    puzzleStatus: save.puzzleStatus,
+    puzzleRevealed: save.puzzleRevealed,
+    clueQueue: save.clueQueue,
+    clueNote: save.clueNote,
   };
 }
 
-/** Last-write-wins merge per mode. Returns modes map to apply locally. */
-export async function syncAllModesLastWriteWins(
+/**
+ * Per-mode merge: same run unions discovered words (newer save wins for run
+ * state); different runs take the newer save. Returns modes to apply locally.
+ */
+export async function syncAllModesMerge(
   client: SupabaseClient,
   userId: string,
   localModes: Partial<Record<GameMode, ModeSave>>,
@@ -61,14 +69,15 @@ export async function syncAllModesLastWriteWins(
 
   if (error) throw error;
 
-  const remoteByMode = new Map<GameMode, { save: ModeSave; updatedAt: number }>();
+  const remoteByMode = new Map<GameMode, ModeSave>();
   for (const row of data ?? []) {
-    const mode = (row.mode as GameMode) ?? "forge";
+    const mode = row.mode as GameMode;
     if (!ALL_MODES.includes(mode)) continue;
-    remoteByMode.set(mode, {
-      save: normalizeModeSave(row.save as ModeSave, mode),
-      updatedAt: new Date(row.updated_at).getTime(),
-    });
+    // Rows from another save version are replaced by the local save on the next push.
+    if (row.save_version !== SAVE_VERSION || !(row.save as ModeSave)?.runId) continue;
+    const save = normalizeModeSave(row.save as ModeSave, mode);
+    if (!save.lastTickAt) save.lastTickAt = new Date(row.updated_at).getTime();
+    remoteByMode.set(mode, save);
   }
 
   const merged: Partial<Record<GameMode, ModeSave>> = {};
@@ -78,9 +87,6 @@ export async function syncAllModesLastWriteWins(
   for (const mode of ALL_MODES) {
     const local = localModes[mode];
     const remote = remoteByMode.get(mode);
-    const localTs = local?.lastTickAt ?? 0;
-    const remoteTs = remote?.updatedAt ?? 0;
-
     if (!local && !remote) continue;
 
     if (!remote && local) {
@@ -91,22 +97,19 @@ export async function syncAllModesLastWriteWins(
     }
 
     if (remote && !local) {
-      merged[mode] = remote.save;
+      merged[mode] = remote;
       pulled.push(mode);
       continue;
     }
 
     if (remote && local) {
-      if (remoteTs > localTs) {
-        merged[mode] = remote.save;
-        pulled.push(mode);
-      } else if (localTs > remoteTs) {
-        await pushModeSave(client, userId, mode, local);
-        merged[mode] = local;
+      const next = mergeModeSave(local, remote);
+      merged[mode] = next;
+      if (!sameModeSave(next, remote)) {
+        await pushModeSave(client, userId, mode, next);
         pushed.push(mode);
-      } else {
-        merged[mode] = local;
       }
+      if (!sameModeSave(next, local)) pulled.push(mode);
     }
   }
 
@@ -134,65 +137,50 @@ export async function pushModeSave(
   if (error) throw error;
 }
 
-export async function pushAllModeSaves(
+export async function deleteModeSaves(
   client: SupabaseClient,
   userId: string,
-  modes: Partial<Record<GameMode, ModeSave>>,
+  modes: GameMode[] | "all",
 ): Promise<void> {
-  for (const mode of ALL_MODES) {
-    const save = modes[mode];
-    if (!save) continue;
-    await pushModeSave(client, userId, mode, save);
+  let query = client.from("game_saves").delete().eq("user_id", userId);
+  if (modes !== "all") {
+    if (modes.length === 0) return;
+    query = query.in("mode", modes);
   }
+  const { error } = await query;
+  if (error) throw error;
 }
 
-/** @deprecated Prefer syncAllModesLastWriteWins — kept for narrow call sites. */
-export async function syncSaveLastWriteWins(
+export async function fetchProfile(
   client: SupabaseClient,
   userId: string,
-  local: GameSave,
-): Promise<{ save: GameSave; source: "local" | "remote" | "unchanged" }> {
-  const result = await syncAllModesLastWriteWins(client, userId, local.modes);
-  const changed =
-    result.pushed.length > 0 || result.pulled.length > 0 ? "local" : "unchanged";
-  const source =
-    result.pulled.length > 0 && result.pushed.length === 0
-      ? "remote"
-      : result.pushed.length > 0
-        ? "local"
-        : changed;
+): Promise<{ displayName: string | null; progress: PlayerProgress | null }> {
+  const { data, error } = await client
+    .from("profiles")
+    .select("display_name, progress")
+    .eq("id", userId)
+    .maybeSingle();
+  if (error) throw error;
   return {
-    save: {
-      ...local,
-      version: SAVE_VERSION,
-      modes: result.modes,
-    },
-    source,
+    displayName: (data?.display_name as string | null | undefined) ?? null,
+    progress: data?.progress ? normalizeProgress(data.progress) : null,
   };
 }
 
-export async function pushSave(
-  client: SupabaseClient,
-  userId: string,
-  save: GameSave,
-): Promise<void> {
-  await pushAllModeSaves(client, userId, save.modes);
-}
-
-export async function upsertProfileTheme(
+export async function upsertProfile(
   client: SupabaseClient,
   userId: string,
   theme: ThemePreference,
   displayName?: string | null,
+  progress?: PlayerProgress,
 ): Promise<void> {
-  const { error } = await client.from("profiles").upsert(
-    {
-      id: userId,
-      theme,
-      display_name: displayName ?? null,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "id" },
-  );
+  const row: Record<string, unknown> = {
+    id: userId,
+    theme,
+    updated_at: new Date().toISOString(),
+  };
+  if (displayName) row.display_name = displayName;
+  if (progress) row.progress = progress;
+  const { error } = await client.from("profiles").upsert(row, { onConflict: "id" });
   if (error) throw error;
 }

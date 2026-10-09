@@ -1,7 +1,7 @@
 import { EnglishWorld } from "@/dictionary/english";
 
 /** Multiplier tiers x3–x10 */
-export const COMBO_MULTIPLIERS = [3, 4, 5, 6, 7, 8, 9, 10] as const;
+const COMBO_MULTIPLIERS = [3, 4, 5, 6, 7, 8, 9, 10] as const;
 export type ComboMultiplier = (typeof COMBO_MULTIPLIERS)[number];
 
 export const COMBO_TIER_NAMES: Record<ComboMultiplier, string> = {
@@ -46,7 +46,8 @@ export function wordQuality(
     opts?.defineSolve ||
     opts?.ladderAdvance ||
     rarity === "rare" ||
-    rarity === "epic"
+    rarity === "epic" ||
+    rarity === "legendary"
   ) {
     return "great";
   }
@@ -61,7 +62,7 @@ export function wordQuality(
   return "standard";
 }
 
-export function qualityTierBoost(q: WordQuality): number {
+function qualityTierBoost(q: WordQuality): number {
   if (q === "great") return 2;
   if (q === "good") return 1;
   return 0;

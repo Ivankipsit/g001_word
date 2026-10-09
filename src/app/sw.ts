@@ -8,7 +8,7 @@ declare global {
   }
 }
 
-declare const self: ServiceWorkerGlobalScope;
+declare const self: WorkerGlobalScope;
 
 const serwist = new Serwist({
   precacheEntries: self.__SW_MANIFEST,
@@ -17,9 +17,12 @@ const serwist = new Serwist({
   navigationPreload: true,
   runtimeCaching: [
     {
-      matcher: ({ url }) => url.pathname === "/dictionary/english-words.json",
+      matcher: ({ url }) =>
+        url.pathname === "/dictionary/english-words.json.gz" ||
+        url.pathname === "/dictionary/english-clues.json.gz",
       handler: new CacheFirst({
-        cacheName: "word-forge-lexicon-v1",
+        // Bump on every dictionary rebuild; CacheFirst never revalidates.
+        cacheName: "word-forge-lexicon-v5",
         plugins: [
           new ExpirationPlugin({
             maxEntries: 2,

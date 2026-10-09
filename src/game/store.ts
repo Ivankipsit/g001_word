@@ -1,8 +1,19 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { EnglishWorld } from "@/dictionary/english";
+import { idbStorage } from "@/lib/idbStorage";
+import { mergeModeSave, newRunId } from "@/game/saveMerge";
+import { capPoints } from "@/lib/points";
+import { achievementStats, newlyUnlocked } from "@/game/achievements";
+import {
+  blankProgress,
+  dailyComplete,
+  markDailyDone,
+  mergeProgress,
+  normalizeProgress,
+} from "@/game/progress";
 import {
   canFormWord,
   canFormWordFromSet,
@@ -11,7 +22,6 @@ import {
   pickPlayableStartLetters,
   pickScrambleLetters,
   shuffleArray,
-  uniqueLettersWithLevels,
   utcDateString,
 } from "@/game/letters";
 import {
@@ -31,6 +41,21 @@ import {
 } from "@/game/combo";
 import { computeOfflineEarnings } from "@/game/idle";
 import { scoreWord } from "@/game/scoring";
+import { wordRegister } from "@/dictionary/clues";
+import {
+  decoyChoices,
+  fieldHasTarget,
+  isFieldMode,
+  nextFieldOpening,
+} from "@/game/fieldModes";
+import {
+  correctSlots,
+  formableSecret,
+  nextHintSlot,
+  pinBoardFor,
+  WORDLE_GUESSES,
+  type WordleLength,
+} from "@/game/puzzles";
 import {
   GENERATORS,
   generatorCost,
@@ -41,6 +66,8 @@ import type {
   GameMode,
   GameSave,
   ModeSave,
+  PendingRemoteDeletes,
+  PlayerProgress,
   ScoreBreakdown,
   ScorePopEvent,
   ScreenId,
@@ -55,7 +82,10 @@ import {
   SAVE_VERSION,
   modeHasIdleShop,
   modeHasLetterShop,
+  modeIsDaily,
+  modeIsPin,
   modeIsTimedRound,
+  modeIsWordle,
   modeRequiresKeyLetter,
   modeUsesLetterSet,
 } from "@/game/types";
@@ -64,6 +94,7 @@ function blankModeSave(mode: GameMode): ModeSave {
   return {
     started: false,
     mode,
+    runId: newRunId(),
     keystoneLetter: undefined,
     letters: [],
     letterLevels: {},
@@ -91,6 +122,16 @@ function blankModeSave(mode: GameMode): ModeSave {
     comboExpiresAt: null,
     heatPeakCombo: undefined,
     echoLastLetter: undefined,
+    wordleLength: undefined,
+    wordleSecret: undefined,
+    wordleGuesses: undefined,
+    pinLocks: undefined,
+    pinSecret: undefined,
+    pinSlots: undefined,
+    puzzleStatus: undefined,
+    puzzleRevealed: undefined,
+    clueQueue: undefined,
+    clueNote: undefined,
   };
 }
 
@@ -109,7 +150,18 @@ function blankRoot(): GameSave {
     started: false,
     settings: { soundEnabled: true, theme: "system" },
     modes: {},
+    progress: blankProgress(),
   };
+}
+
+/** Share of points kept on a clue target after this many hints (3 = word shown). */
+const FIELD_HINT_KEEP = [1, 2 / 3, 1 / 3, 0] as const;
+const FIELD_HINT_STEPS = 3;
+
+/** A new clue target starts with no hints used. */
+function withFreshHints(patch: Partial<ModeSave>): Partial<ModeSave> {
+  if (patch.defineTargetWord === undefined) return patch;
+  return { ...patch, hintReveals: 0, puzzleRevealed: [] };
 }
 
 function levelsFromLetters(letters: string[]): Record<string, number> {
@@ -131,6 +183,13 @@ export interface StartGameOptions {
   ladderNextLength?: number;
   affixId?: string;
   affixMatch?: string;
+  wordleLength?: WordleLength;
+  wordleSecret?: string;
+  pinLocks?: 1 | 2;
+  pinSecret?: string;
+  pinSlots?: number[];
+  clueQueue?: string[];
+  clueNote?: string;
 }
 
 interface GameStore extends ModeSave {
@@ -147,9 +206,22 @@ interface GameStore extends ModeSave {
   hydrated: boolean;
   /** Scramble results overlay after timer. */
   scrambleShowResults: boolean;
+  /** Signed-in Supabase user (set by useCloudSync); not persisted. */
+  cloudUserId: string | null;
+  pendingRemoteDeletes: PendingRemoteDeletes | null;
+  progress: PlayerProgress;
+  /** Latest unlock to announce; not persisted. */
+  lastAchievement: { id: string; title: string } | null;
 
   setScreen: (screen: ScreenId) => void;
+  dismissAchievement: () => void;
+  /** Merge cloud progress into local (union; never drops local unlocks). */
+  applyRemoteProgress: (remote: PlayerProgress) => void;
   setHydrated: (v: boolean) => void;
+  setCloudUserId: (id: string | null) => void;
+  setDisplayName: (name: string) => void;
+  /** Drop the entries a finished cloud delete handled; keeps anything queued since. */
+  clearPendingRemoteDeletes: (handled: PendingRemoteDeletes) => void;
   startGame: (opts: StartGameOptions) => void;
   /** Stash active mode and return to mode picker — does not wipe other modes. */
   leaveToModePicker: () => void;
@@ -177,6 +249,15 @@ interface GameStore extends ModeSave {
   buyLetter: (letter: string) => { ok: boolean; reason?: string };
   buyGenerator: (id: string) => { ok: boolean; reason?: string };
   buyHint: () => { ok: boolean; reason?: string; reveal?: string };
+  /**
+   * Lockstep / Wordle: meaning, a letter, another, the word.
+   * Clue and Thread modes: a letter, another, the word (each costs points on that target).
+   */
+  revealPuzzleHint: () => {
+    ok: boolean;
+    reason?: string;
+    kind?: "meaning" | "letter" | "word";
+  };
   shuffleLetters: () => void;
   tickIdle: () => void;
   tickCombo: () => void;
@@ -185,6 +266,9 @@ interface GameStore extends ModeSave {
   dismissOffline: () => void;
   endScrambleRound: () => void;
   dismissScrambleResults: () => void;
+  submitWordleGuess: (guess: string) => { ok: boolean; reason?: string };
+  submitPin: (attempt: string) => { ok: boolean; reason?: string };
+  chooseDecoy: (index: number) => void;
   startScrambleRound: (durationSec?: number) => void;
   ensureDailyBoard: () => void;
   /** Wipe one mode save; return to picker. Daily: reset progress, keep board. */
@@ -195,6 +279,7 @@ function extractModeSave(s: ModeSave): ModeSave {
   return {
     started: s.started,
     mode: s.mode,
+    runId: s.runId,
     keystoneLetter: s.keystoneLetter,
     letters: s.letters,
     letterLevels: s.letterLevels ?? {},
@@ -222,6 +307,16 @@ function extractModeSave(s: ModeSave): ModeSave {
     comboExpiresAt: s.comboExpiresAt ?? null,
     heatPeakCombo: s.heatPeakCombo,
     echoLastLetter: s.echoLastLetter ?? null,
+    wordleLength: s.wordleLength,
+    wordleSecret: s.wordleSecret,
+    wordleGuesses: s.wordleGuesses,
+    pinLocks: s.pinLocks,
+    pinSecret: s.pinSecret,
+    pinSlots: s.pinSlots,
+    puzzleStatus: s.puzzleStatus,
+    puzzleRevealed: s.puzzleRevealed,
+    clueQueue: s.clueQueue,
+    clueNote: s.clueNote,
   };
 }
 
@@ -257,44 +352,99 @@ function toPersisted(s: GameStore): GameSave {
     started: s.started,
     settings: s.settings,
     modes,
+    progress: s.progress,
+    pendingRemoteDeletes: s.pendingRemoteDeletes,
   };
 }
 
-function migrateV2ToV3(p: Record<string, unknown>): GameSave {
-  const mode = (p.mode as GameMode) ?? "forge";
-  const rawLetters = Array.isArray(p.letters) ? (p.letters as string[]) : [];
-  const { letters, letterLevels } = uniqueLettersWithLevels(rawLetters);
-  const modeSave: ModeSave = {
-    started: Boolean(p.started),
-    mode: mode === "keystone" ? "keystone" : "forge",
-    keystoneLetter:
-      typeof p.keystoneLetter === "string" ? p.keystoneLetter : undefined,
-    letters,
-    letterLevels,
-    coins: typeof p.coins === "number" ? p.coins : 0,
-    totalScore: typeof p.totalScore === "number" ? p.totalScore : 0,
-    discoveredWords:
-      (p.discoveredWords as ModeSave["discoveredWords"]) ?? {},
-    generators: (p.generators as Record<string, number>) ?? {},
-    chainCount: typeof p.chainCount === "number" ? p.chainCount : 0,
-    lastTickAt: typeof p.lastTickAt === "number" ? p.lastTickAt : Date.now(),
-    languageId:
-      typeof p.languageId === "string" ? p.languageId : EnglishWorld.id,
-  };
-  const settings = (p.settings as GameSave["settings"]) ?? {
-    soundEnabled: true,
-    theme: "system" as ThemePreference,
-  };
-  return {
-    version: SAVE_VERSION,
-    activeMode: modeSave.mode,
-    started: modeSave.started,
-    settings: {
-      soundEnabled: settings.soundEnabled ?? true,
-      theme: settings.theme ?? "system",
-    },
-    modes: { [modeSave.mode]: modeSave },
-  };
+/** Register Hunt has no single target; a hint picks an unfound tagged word. */
+function pickHuntTarget(s: ModeSave): string | null {
+  let pick: string | null = null;
+  let seen = 0;
+  for (const entry of EnglishWorld.listWords()) {
+    const w = entry.word;
+    if (w.length < EnglishWorld.minWordLength || w.length > 8) continue;
+    if (s.discoveredWords[w] || !canFormWordFromSet(w, s.letters) || !wordRegister(w)) continue;
+    seen += 1;
+    // Reservoir sample so the pick is not biased toward early letters.
+    if (Math.random() * seen < 1) pick = w;
+  }
+  return pick;
+}
+
+function revealFieldHint(
+  get: () => GameStore,
+  set: (patch: Partial<GameStore>) => void,
+): { ok: boolean; reason?: string; kind?: "letter" | "word" } {
+  const state = get();
+  if (state.clueNote === "pending") return { ok: false, reason: "Choose a meaning first" };
+  let secret = state.defineTargetWord?.toLowerCase();
+  let step = state.hintReveals ?? 0;
+  let revealed = state.puzzleRevealed ?? [];
+  if (state.mode === "hunt" && (!secret || state.discoveredWords[secret])) {
+    secret = pickHuntTarget(state) ?? undefined;
+    step = 0;
+    revealed = [];
+  }
+  if (!secret) return { ok: false, reason: "No word to hint" };
+  if (step >= FIELD_HINT_STEPS) return { ok: false, reason: "No hints left" };
+
+  const idx = step < FIELD_HINT_STEPS - 1 ? nextHintSlot(secret, revealed) : null;
+  const patch: Partial<ModeSave> =
+    idx == null
+      ? {
+          hintReveals: FIELD_HINT_STEPS,
+          puzzleRevealed: secret.split("").map((_, i) => i),
+        }
+      : { hintReveals: step + 1, puzzleRevealed: [...revealed, idx] };
+  if (state.mode === "hunt") patch.defineTargetWord = secret;
+  set({ ...patch, lastTickAt: Date.now() });
+  return { ok: true, kind: idx == null ? "word" : "letter" };
+}
+
+/** Record a finished daily and any new achievements after a scoring action. */
+function settleProgress(
+  get: () => GameStore,
+  set: (patch: Partial<GameStore>) => void,
+) {
+  const s = get();
+  const today = utcDateString();
+  const modes = stashActive(get);
+  let progress = s.progress;
+  for (const m of ["daily", "pinDaily", "wordleDaily"] as const) {
+    if (dailyComplete(m, modes[m], today)) progress = markDailyDone(progress, today);
+  }
+  const unlocked = newlyUnlocked(achievementStats(modes, progress, today), progress);
+  if (unlocked.length > 0) {
+    const at = new Date().toISOString();
+    const achievements = { ...progress.achievements };
+    for (const a of unlocked) achievements[a.id] = at;
+    progress = { ...progress, achievements };
+  }
+  if (progress === s.progress) return;
+  const last = unlocked[unlocked.length - 1];
+  set({
+    progress,
+    lastAchievement: last ? { id: last.id, title: last.title } : s.lastAchievement,
+  });
+}
+
+function queueRemoteDelete(
+  s: GameStore,
+  target: GameMode | "all",
+): PendingRemoteDeletes | null {
+  const uid = s.cloudUserId;
+  if (!uid) return s.pendingRemoteDeletes;
+  const prev = s.pendingRemoteDeletes;
+  if (target === "all") return { userId: uid, modes: "all" };
+  if (prev && prev.userId === uid) {
+    if (prev.modes === "all") return prev;
+    return {
+      userId: uid,
+      modes: prev.modes.includes(target) ? prev.modes : [...prev.modes, target],
+    };
+  }
+  return { userId: uid, modes: [target] };
 }
 
 export const useGameStore = create<GameStore>()(
@@ -312,9 +462,37 @@ export const useGameStore = create<GameStore>()(
       lastOffline: null,
       hydrated: false,
       scrambleShowResults: false,
+      cloudUserId: null,
+      pendingRemoteDeletes: null,
+      progress: blankProgress(),
+      lastAchievement: null,
 
       setScreen: (screen) => set({ screen }),
+      dismissAchievement: () => set({ lastAchievement: null }),
+      applyRemoteProgress: (remote) => {
+        set((s) => ({ progress: mergeProgress(s.progress, normalizeProgress(remote)) }));
+        settleProgress(get, set);
+      },
       setHydrated: (v) => set({ hydrated: v }),
+      setCloudUserId: (id) => set({ cloudUserId: id }),
+      setDisplayName: (name) =>
+        set((s) => ({
+          settings: { ...s.settings, displayName: name.slice(0, 32) },
+        })),
+      clearPendingRemoteDeletes: (handled) => {
+        const cur = get().pendingRemoteDeletes;
+        if (!cur || cur.userId !== handled.userId) return;
+        if (handled.modes === "all") {
+          set({ pendingRemoteDeletes: null });
+          return;
+        }
+        if (cur.modes === "all") return;
+        const done = handled.modes;
+        const rest = cur.modes.filter((m) => !done.includes(m));
+        set({
+          pendingRemoteDeletes: rest.length > 0 ? { userId: cur.userId, modes: rest } : null,
+        });
+      },
 
       startGame: ({
         mode,
@@ -326,8 +504,30 @@ export const useGameStore = create<GameStore>()(
         ladderNextLength,
         affixId,
         affixMatch,
+        wordleLength,
+        wordleSecret,
+        pinLocks,
+        pinSecret,
+        pinSlots,
+        clueQueue,
+        clueNote,
       }) => {
         const modes = stashActive(get);
+        if (modeIsDaily(mode)) {
+          const existing = modes[mode];
+          if (existing?.started && existing.dailyDateUtc === utcDateString()) {
+            set({
+              ...applyModeFields(existing),
+              modes,
+              activeMode: mode,
+              started: true,
+              settings: get().settings,
+              screen: "play",
+              version: SAVE_VERSION,
+            });
+            return;
+          }
+        }
         const upper = letters.map((l) => l.toUpperCase());
         const noShopLevels =
           mode === "scramble" ||
@@ -335,7 +535,10 @@ export const useGameStore = create<GameStore>()(
           mode === "ladder" ||
           mode === "affix" ||
           mode === "heat" ||
-          mode === "echo";
+          mode === "echo" ||
+          modeIsWordle(mode) ||
+          modeIsPin(mode) ||
+          isFieldMode(mode);
         const letterLevels = noShopLevels ? {} : levelsFromLetters(upper);
         const duration =
           scrambleDurationSec ?? (mode === "heat" ? 90 : 180);
@@ -346,7 +549,10 @@ export const useGameStore = create<GameStore>()(
           mode === "define" ||
           mode === "ladder" ||
           mode === "heat" ||
-          mode === "echo"
+          mode === "echo" ||
+          modeIsWordle(mode) ||
+          modeIsPin(mode) ||
+          isFieldMode(mode)
             ? 0
             : 25;
 
@@ -354,6 +560,7 @@ export const useGameStore = create<GameStore>()(
           ...blankModeSave(mode),
           started: true,
           mode,
+          runId: newRunId(),
           keystoneLetter:
             mode === "keystone" ||
             mode === "daily" ||
@@ -373,10 +580,13 @@ export const useGameStore = create<GameStore>()(
           scrambleEndsAt: timed ? now + duration * 1000 : null,
           scrambleRoundActive: timed,
           scrambleRoundWords: timed ? [] : undefined,
-          dailyDateUtc: mode === "daily" ? utcDateString() : undefined,
           defineTargetWord:
-            mode === "define" ? defineTargetWord?.toLowerCase() : undefined,
-          defineHint: mode === "define" ? defineHint : undefined,
+            mode === "define" || isFieldMode(mode)
+              ? defineTargetWord?.toLowerCase()
+              : undefined,
+          defineHint: mode === "define" || isFieldMode(mode) ? defineHint : undefined,
+          clueQueue: isFieldMode(mode) ? (clueQueue ?? []) : undefined,
+          clueNote: isFieldMode(mode) ? clueNote : undefined,
           ladderNextLength:
             mode === "ladder" ? (ladderNextLength ?? LADDER_MIN) : undefined,
           affixId: mode === "affix" ? affixId : undefined,
@@ -385,6 +595,19 @@ export const useGameStore = create<GameStore>()(
           hintReveals: 0,
           heatPeakCombo: mode === "heat" ? 0 : undefined,
           echoLastLetter: mode === "echo" ? null : undefined,
+          wordleLength: modeIsWordle(mode) ? wordleLength : undefined,
+          wordleSecret: modeIsWordle(mode) ? wordleSecret?.toLowerCase() : undefined,
+          wordleGuesses: modeIsWordle(mode) ? [] : undefined,
+          pinLocks: modeIsPin(mode) ? pinLocks : undefined,
+          pinSecret: modeIsPin(mode) ? pinSecret?.toLowerCase() : undefined,
+          pinSlots: modeIsPin(mode) ? pinSlots : undefined,
+          puzzleStatus: modeIsWordle(mode) || modeIsPin(mode) ? "play" : undefined,
+          puzzleRevealed:
+            modeIsWordle(mode) || modeIsPin(mode) || isFieldMode(mode) ? [] : undefined,
+          dailyDateUtc:
+            mode === "daily" || mode === "pinDaily" || mode === "wordleDaily"
+              ? utcDateString()
+              : undefined,
           ...blankCombo(),
         };
 
@@ -422,14 +645,15 @@ export const useGameStore = create<GameStore>()(
       },
 
       resetGame: () => {
-        const theme = get().settings.theme;
+        const { theme, displayName } = get().settings;
         set({
           ...blankModeSave("forge"),
           version: SAVE_VERSION,
           activeMode: "forge",
           started: false,
-          settings: { soundEnabled: true, theme },
+          settings: { soundEnabled: true, theme, displayName },
           modes: {},
+          pendingRemoteDeletes: queueRemoteDelete(get(), "all"),
           screen: "play",
           draft: [],
           draftIndices: [],
@@ -445,7 +669,7 @@ export const useGameStore = create<GameStore>()(
         let save = modes[mode];
         if (!save?.started) return false;
 
-        if (mode === "daily") {
+        if (mode === "daily" || mode === "pinDaily" || mode === "wordleDaily") {
           const today = utcDateString();
           if (save.dailyDateUtc !== today) {
             // New UTC day — do not resume stale board
@@ -507,8 +731,7 @@ export const useGameStore = create<GameStore>()(
             merged[mode] = remote;
             continue;
           }
-          merged[mode] =
-            (remote.lastTickAt ?? 0) > (local.lastTickAt ?? 0) ? remote : local;
+          merged[mode] = mergeModeSave(local, remote);
         }
         const nextActive = activeMode ?? get().activeMode;
         const activeSave = merged[nextActive];
@@ -540,6 +763,7 @@ export const useGameStore = create<GameStore>()(
             version: SAVE_VERSION,
           });
         }
+        settleProgress(get, set);
       },
 
       getPersistedSave: () => toPersisted(get()),
@@ -607,6 +831,7 @@ export const useGameStore = create<GameStore>()(
         set({
           ...blankModeSave(get().activeMode),
           modes: nextModes,
+          pendingRemoteDeletes: queueRemoteDelete(get(), mode),
           started: false,
           activeMode: mode,
           settings: get().settings,
@@ -643,6 +868,17 @@ export const useGameStore = create<GameStore>()(
         }
 
         const word = state.draft.join("").toLowerCase();
+        if (state.mode === "decoy" && state.clueNote === "pending") {
+          return { ok: false, reason: "Choose which meaning matches" };
+        }
+        if (
+          (state.mode === "homophone" || state.mode === "trap") &&
+          state.clueNote &&
+          word === state.clueNote.toLowerCase()
+        ) {
+          set({ chainCount: 0, ...breakCombo() });
+          return { ok: false, reason: "That's the other spelling" };
+        }
         if (word.length < MIN_WORD_LENGTH) {
           return {
             ok: false,
@@ -668,11 +904,13 @@ export const useGameStore = create<GameStore>()(
           };
         }
 
-        if (state.mode === "define" && state.defineTargetWord) {
-          if (word !== state.defineTargetWord) {
-            set({ chainCount: 0, ...breakCombo() });
-            return { ok: false, reason: "Not the word for this clue" };
-          }
+        if (
+          (state.mode === "define" || fieldHasTarget(state.mode)) &&
+          state.defineTargetWord &&
+          word !== state.defineTargetWord
+        ) {
+          set({ chainCount: 0, ...breakCombo() });
+          return { ok: false, reason: "Not the word for this clue" };
         }
 
         if (state.mode === "ladder") {
@@ -709,8 +947,12 @@ export const useGameStore = create<GameStore>()(
           return { ok: false, reason: "Not in the lexicon" };
         }
 
+        const reopen =
+          (state.mode === "double" || state.mode === "decoy") &&
+          state.clueNote === "reopen" &&
+          word === state.defineTargetWord;
         // One find per word per mode.
-        if (state.discoveredWords[word]) {
+        if (state.discoveredWords[word] && !reopen) {
           return { ok: false, reason: "Already found in this mode" };
         }
         if (
@@ -737,19 +979,33 @@ export const useGameStore = create<GameStore>()(
         );
         const quality = wordQuality(word, {
           keystoneApplied: keyAppliedPreview,
-          defineSolve: state.mode === "define",
+          defineSolve:
+            state.mode === "define" ||
+            (fieldHasTarget(state.mode) && word === state.defineTargetWord) ||
+            (state.mode === "hunt" && Boolean(wordRegister(word))),
           ladderAdvance,
         });
 
-        const comboResult = advanceCombo(comboFromSave(state), quality);
-        const nextChain = (comboResult.next.comboWordsInWindow || 1);
-        const breakdown = scoreWord(word, {
+        const field = isFieldMode(state.mode);
+        const hintedTarget =
+          field && Boolean(state.defineTargetWord) && word === state.defineTargetWord;
+        const hintsUsed = hintedTarget ? Math.min(state.hintReveals ?? 0, FIELD_HINT_STEPS) : 0;
+        const keep = FIELD_HINT_KEEP[hintsUsed]!;
+        const wordShown = hintsUsed >= FIELD_HINT_STEPS;
+
+        const comboResult = wordShown
+          ? { next: breakCombo(), multiplier: 1, tierUp: false }
+          : advanceCombo(comboFromSave(state), quality);
+        const nextChain = wordShown ? 0 : (comboResult.next.comboWordsInWindow || 1);
+        const scored = scoreWord(word, {
           isFirstDiscovery: true,
-          chainCount: nextChain,
+          chainCount: Math.max(1, nextChain),
           keystoneLetter,
           letterLevels: state.letterLevels,
           comboMultiplier: comboResult.multiplier,
         });
+        const breakdown =
+          keep === 1 ? scored : { ...scored, total: Math.round(scored.total * keep) };
 
         const discoveredWords = {
           ...state.discoveredWords,
@@ -764,6 +1020,8 @@ export const useGameStore = create<GameStore>()(
           id: `${Date.now()}-${word}`,
           word,
           total: breakdown.total,
+          rarity: EnglishWorld.getRarity(word) ?? undefined,
+          hintPenalty: hintedTarget && hintsUsed > 0 ? keep : undefined,
           isFirstDiscovery: true,
           definition:
             state.mode === "define"
@@ -777,6 +1035,11 @@ export const useGameStore = create<GameStore>()(
           tierUp: comboResult.tierUp,
           wordQuality: quality,
         };
+        const trapBonus =
+          state.mode === "trap" && state.clueNote && state.clueNote !== "reopen"
+            ? Math.round(20 * keep)
+            : 0;
+        if (trapBonus) pop.total += trapBonus;
 
         let ladderNextLength = state.ladderNextLength;
         if (state.mode === "ladder") {
@@ -795,6 +1058,27 @@ export const useGameStore = create<GameStore>()(
             defineRevealed: [],
             hintReveals: 0,
           };
+        } else if (state.mode === "decoy" && state.clueNote && state.clueNote !== "reopen") {
+          const choice = decoyChoices(state.defineHint ?? "", state.clueNote);
+          if (choice) {
+            pop.choices = choice.choices;
+            pop.correctIndex = choice.correctIndex;
+            definePatch = { clueNote: "pending" };
+          }
+        } else if (isFieldMode(state.mode) && state.mode !== "hunt") {
+          const next = nextFieldOpening(
+            state.mode,
+            {
+              target: state.defineTargetWord ?? "",
+              note: state.clueNote ?? "",
+              queue: state.clueQueue ?? [],
+              letters: state.letters,
+            },
+            new Set(Object.keys(discoveredWords)),
+          );
+          if (next) definePatch = withFreshHints(next);
+        } else if (state.mode === "hunt" && hintedTarget) {
+          definePatch = { defineTargetWord: undefined, hintReveals: 0, puzzleRevealed: [] };
         }
 
         const heatPeak = Math.max(
@@ -802,9 +1086,16 @@ export const useGameStore = create<GameStore>()(
           comboResult.multiplier,
         );
 
+        const solvedClueClean = fieldHasTarget(state.mode) && hintedTarget && hintsUsed === 0;
+        if (solvedClueClean) {
+          set({
+            progress: { ...state.progress, hintFreeSolves: state.progress.hintFreeSolves + 1 },
+          });
+        }
+
         set({
-          coins: state.coins + breakdown.total,
-          totalScore: state.totalScore + breakdown.total,
+          coins: field ? state.coins : state.coins + breakdown.total + trapBonus,
+          totalScore: capPoints(state.totalScore + breakdown.total + trapBonus),
           discoveredWords,
           chainCount: nextChain,
           draft: [],
@@ -824,8 +1115,46 @@ export const useGameStore = create<GameStore>()(
           ...comboResult.next,
           ...definePatch,
         });
+        settleProgress(get, set);
 
         return { ok: true, breakdown };
+      },
+
+      chooseDecoy: (index) => {
+        const state = get();
+        const pop = state.lastScorePop;
+        if (state.mode !== "decoy" || !pop?.choices || pop.correctIndex == null) return;
+        if (index !== pop.correctIndex) {
+          const missed = pop.choices[pop.correctIndex] ?? "";
+          set({
+            defineHint: missed,
+            clueNote: "reopen",
+            hintReveals: 0,
+            puzzleRevealed: [],
+            lastScorePop: null,
+            draft: [],
+            draftIndices: [],
+            chainCount: 0,
+            ...breakCombo(),
+          });
+          return;
+        }
+        const next = nextFieldOpening(
+          "decoy",
+          {
+            target: state.defineTargetWord ?? "",
+            note: "",
+            queue: [],
+            letters: state.letters,
+          },
+          new Set(Object.keys(state.discoveredWords)),
+        );
+        set({
+          lastScorePop: null,
+          draft: [],
+          draftIndices: [],
+          ...(next ? withFreshHints(next) : {}),
+        });
       },
 
       buyLetter: (letter) => {
@@ -879,6 +1208,97 @@ export const useGameStore = create<GameStore>()(
           lastTickAt: Date.now(),
         });
         return { ok: true };
+      },
+
+      revealPuzzleHint: () => {
+        const state = get();
+        if (!state.started) return { ok: false, reason: "Start a puzzle first" };
+        if (isFieldMode(state.mode)) return revealFieldHint(get, set);
+        const puzzle = modeIsPin(state.mode) || modeIsWordle(state.mode);
+        if (!puzzle) return { ok: false, reason: "No hints in this mode" };
+        if (state.puzzleStatus && state.puzzleStatus !== "play") {
+          return { ok: false, reason: "This puzzle is finished" };
+        }
+        const step = state.hintReveals ?? 0;
+        if (step >= 4) return { ok: false, reason: "No hints left" };
+        const secret = (
+          modeIsWordle(state.mode) ? state.wordleSecret : state.pinSecret
+        )?.toLowerCase();
+        if (!secret) return { ok: false, reason: "No secret word" };
+
+        const commit = (patch: Partial<ModeSave>, kind: "meaning" | "letter" | "word") => {
+          const next = {
+            ...extractModeSave(state),
+            ...patch,
+            lastTickAt: Date.now(),
+          };
+          set({
+            ...patch,
+            lastTickAt: next.lastTickAt,
+            modes: { ...state.modes, [state.mode]: next },
+          });
+          return { ok: true as const, kind };
+        };
+
+        if (step === 0) return commit({ hintReveals: 1 }, "meaning");
+
+        const known = modeIsPin(state.mode)
+          ? [...(state.pinSlots ?? []), ...(state.puzzleRevealed ?? [])]
+          : [
+              ...(state.puzzleRevealed ?? []),
+              ...correctSlots(state.wordleGuesses ?? [], secret),
+            ];
+
+        if (step === 1 || step === 2) {
+          const idx = nextHintSlot(secret, known);
+          if (idx == null) {
+            return commit(
+              {
+                hintReveals: 4,
+                puzzleRevealed: secret.split("").map((_, i) => i),
+                pinSlots: modeIsPin(state.mode)
+                  ? secret.split("").map((_, i) => i)
+                  : state.pinSlots,
+              },
+              "word",
+            );
+          }
+          const puzzleRevealed = [...(state.puzzleRevealed ?? []), idx];
+          const pinSlots = modeIsPin(state.mode)
+            ? [...new Set([...(state.pinSlots ?? []), idx])].sort((a, b) => a - b)
+            : state.pinSlots;
+          let letters = state.letters;
+          if (state.mode === "pinDaily") {
+            const drop = secret[idx]!.toUpperCase();
+            const at = letters.findIndex((L) => L.toUpperCase() === drop);
+            if (at >= 0) letters = letters.filter((_, i) => i !== at);
+          }
+          return commit(
+            { hintReveals: step + 1, puzzleRevealed, pinSlots, letters },
+            "letter",
+          );
+        }
+
+        const all = secret.split("").map((_, i) => i);
+        let letters = state.letters;
+        if (state.mode === "pinDaily") {
+          const locked = new Set(state.pinSlots ?? []);
+          for (const i of all) {
+            if (locked.has(i)) continue;
+            const drop = secret[i]!.toUpperCase();
+            const at = letters.findIndex((L) => L.toUpperCase() === drop);
+            if (at >= 0) letters = letters.filter((_, n) => n !== at);
+          }
+        }
+        return commit(
+          {
+            hintReveals: 4,
+            puzzleRevealed: all,
+            pinSlots: modeIsPin(state.mode) ? all : state.pinSlots,
+            letters,
+          },
+          "word",
+        );
       },
 
       buyHint: () => {
@@ -1088,6 +1508,125 @@ export const useGameStore = create<GameStore>()(
         });
       },
 
+      submitWordleGuess: (guess) => {
+        const state = get();
+        if (!modeIsWordle(state.mode) || !state.wordleSecret) {
+          return { ok: false, reason: "No Wordle board" };
+        }
+        if (state.puzzleStatus !== "play") {
+          return { ok: false, reason: "Puzzle finished" };
+        }
+        const word = guess.trim().toLowerCase();
+        const secret = state.wordleSecret;
+        if (word.length !== secret.length) {
+          return { ok: false, reason: `Need ${secret.length} letters` };
+        }
+        if (!EnglishWorld.isValidWord(word)) {
+          return { ok: false, reason: "Not in the lexicon" };
+        }
+        const guesses = state.wordleGuesses ?? [];
+        if (guesses.includes(word)) {
+          return { ok: false, reason: "Already guessed" };
+        }
+        const nextGuesses = [...guesses, word];
+        const won = word === secret;
+        const lost = !won && nextGuesses.length >= WORDLE_GUESSES;
+        const scored = won
+          ? scoreWord(word, {
+              isFirstDiscovery: true,
+              chainCount: 1,
+              letterLevels: {},
+            })
+          : null;
+        set({
+          wordleGuesses: nextGuesses,
+          puzzleStatus: won ? "won" : lost ? "lost" : "play",
+          totalScore: capPoints(state.totalScore + (scored?.total ?? 0)),
+          discoveredWords: won
+            ? {
+                ...state.discoveredWords,
+                [word]: {
+                  discoveredAt: Date.now(),
+                  bestScore: scored?.total ?? 0,
+                  timesFound: 1,
+                },
+              }
+            : state.discoveredWords,
+          lastTickAt: Date.now(),
+        });
+        if (won || lost) settleProgress(get, set);
+        return { ok: true };
+      },
+
+      submitPin: (attempt) => {
+        const state = get();
+        if (!modeIsPin(state.mode) || !state.pinSecret) {
+          return { ok: false, reason: "No locked word" };
+        }
+        if (state.puzzleStatus !== "play") {
+          return { ok: false, reason: "Puzzle finished" };
+        }
+        const word = attempt.trim().toLowerCase();
+        const secret = state.pinSecret;
+        const slots = state.pinSlots ?? [];
+        for (const index of slots) {
+          if (word[index] !== secret[index]) {
+            return { ok: false, reason: "A locked letter moved" };
+          }
+        }
+        if (word !== secret) {
+          return { ok: false, reason: "Not the locked word" };
+        }
+        const scored = scoreWord(word, {
+          isFirstDiscovery: !state.discoveredWords[word],
+          chainCount: 1,
+          letterLevels: state.letterLevels,
+        });
+        const discoveredWords = {
+          ...state.discoveredWords,
+          [word]: {
+            discoveredAt: state.discoveredWords[word]?.discoveredAt ?? Date.now(),
+            bestScore: Math.max(state.discoveredWords[word]?.bestScore ?? 0, scored.total),
+            timesFound: (state.discoveredWords[word]?.timesFound ?? 0) + 1,
+          },
+        };
+        if (state.mode === "pinDaily") {
+          set({
+            puzzleStatus: "won",
+            totalScore: capPoints(state.totalScore + scored.total),
+            discoveredWords,
+            lastTickAt: Date.now(),
+          });
+          settleProgress(get, set);
+          return { ok: true };
+        }
+        const locks = state.pinLocks ?? 1;
+        const nextSecret = formableSecret(
+          state.letters,
+          locks,
+          new Set(Object.keys(discoveredWords)),
+        );
+        if (!nextSecret) {
+          set({
+            puzzleStatus: "won",
+            totalScore: capPoints(state.totalScore + scored.total),
+            discoveredWords,
+            lastTickAt: Date.now(),
+          });
+          return { ok: true };
+        }
+        const board = pinBoardFor(nextSecret, locks, `${nextSecret}:${Date.now()}`);
+        set({
+          pinSecret: nextSecret,
+          pinSlots: board.slots,
+          totalScore: capPoints(state.totalScore + scored.total),
+          discoveredWords,
+          puzzleStatus: "play",
+          lastTickAt: Date.now(),
+        });
+        return { ok: true };
+      },
+
       ensureDailyBoard: () => {
         const state = get();
         if (state.mode !== "daily" || !state.started) return;
@@ -1102,7 +1641,7 @@ export const useGameStore = create<GameStore>()(
         if (sameDay && sameKey && sameLetterSet) return;
 
         // New UTC day or board formula update — adopt today's deterministic board.
-        // Preserve score/lexicon only when same day but letters were regenerated (v2 fix).
+        // Same day: keep score/lexicon and only refresh the letters.
         if (sameDay) {
           set({
             keystoneLetter: board.keyLetter,
@@ -1116,6 +1655,7 @@ export const useGameStore = create<GameStore>()(
         }
 
         set({
+          runId: newRunId(),
           dailyDateUtc: today,
           keystoneLetter: board.keyLetter,
           letters: board.letters,
@@ -1135,25 +1675,25 @@ export const useGameStore = create<GameStore>()(
     {
       name: "word-forge-save",
       version: SAVE_VERSION,
+      storage: createJSONStorage(() => idbStorage),
       partialize: (s): GameSave => toPersisted(s as GameStore),
       merge: (persisted, current) => {
         const p = persisted as Partial<GameSave> | undefined;
-        if (!p || typeof p !== "object") return current;
+        if (!p || typeof p !== "object" || !p.modes) return current;
 
-        const ver = typeof p.version === "number" ? p.version : 0;
-        const root: GameSave =
-          ver >= 3 && p.modes
-            ? {
-                version: SAVE_VERSION,
-                activeMode: (p.activeMode as GameMode) ?? "forge",
-                started: Boolean(p.started),
-                settings: {
-                  soundEnabled: p.settings?.soundEnabled ?? true,
-                  theme: p.settings?.theme ?? "system",
-                },
-                modes: p.modes ?? {},
-              }
-            : migrateV2ToV3(p as Record<string, unknown>);
+        const root: GameSave = {
+          version: SAVE_VERSION,
+          activeMode: p.activeMode ?? "forge",
+          started: Boolean(p.started),
+          settings: {
+            soundEnabled: p.settings?.soundEnabled ?? true,
+            theme: p.settings?.theme ?? "system",
+            displayName: p.settings?.displayName,
+          },
+          modes: p.modes,
+          progress: normalizeProgress(p.progress),
+          pendingRemoteDeletes: p.pendingRemoteDeletes ?? null,
+        };
 
         const active =
           root.modes[root.activeMode] ?? blankModeSave(root.activeMode);
@@ -1167,25 +1707,13 @@ export const useGameStore = create<GameStore>()(
           started: root.started && active.started,
           settings: root.settings,
           modes: root.modes,
+          progress: root.progress,
+          pendingRemoteDeletes: root.pendingRemoteDeletes ?? null,
           hydrated: current.hydrated,
         };
       },
-      migrate: (persisted, fromVersion) => {
-        const p = persisted as Record<string, unknown> | undefined;
-        if (!p || typeof p !== "object") return blankRoot();
-        const ver = typeof p.version === "number" ? p.version : fromVersion;
-        if (ver >= 3 && p.modes) {
-          return {
-            ...(p as unknown as GameSave),
-            version: SAVE_VERSION,
-          };
-        }
-        // v1/v2 flat → per-mode map
-        if ("letters" in p || "mode" in p) {
-          return migrateV2ToV3(p);
-        }
-        return blankRoot();
-      },
+      // Only called when the stored version differs; start fresh instead of upgrading.
+      migrate: () => blankRoot(),
       onRehydrateStorage: () => (state) => {
         state?.setHydrated(true);
       },

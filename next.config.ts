@@ -6,7 +6,7 @@ const withSerwist = withSerwistInit({
   swDest: "public/sw.js",
   // SW is production-only; Next 16 build uses Turbopack (Serwist SW emits via webpack path).
   disable: process.env.NODE_ENV !== "production",
-  // Expanded dictionary chunk is ~5MB; keep it in the precache for offline play.
+  // Gzip dictionary is ~13MB, above this precache cap. Runtime CacheFirst covers it.
   maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
 });
 

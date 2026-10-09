@@ -28,8 +28,14 @@
 .DS_Store
 *.pem
 
-# large dictionary source cache (downloaded by dict:build)
-/scripts/raw-words-large.txt
+# kaikki.org English Wiktionary extract (~3.1GB). Not downloaded by the build.
+/scripts/kaikki.org-dictionary-English.jsonl
+/scripts/kaikki-en.jsonl
+# Norvig word frequency list (~5MB) for rarity tiers.
+/scripts/count_1w.txt
+
+# Uncompressed word list. The app ships public/dictionary/english-words.json.gz.
+/public/dictionary/english-words.json
 
 # debug
 npm-debug.log*

@@ -169,6 +169,15 @@ export function createAppTheme(mode: "light" | "dark"): Theme {
 export const themeColorLight = "#2A6F6F";
 export const themeColorDark = "#1C2623";
 
+/** Page column width at each MUI breakpoint. Grows with the viewport. */
+export const shellMaxWidth = {
+  xs: "100%",
+  sm: 720,
+  md: 960,
+  lg: 1200,
+  xl: 1440,
+} as const;
+
 export function shellGradient(mode: "light" | "dark"): string {
   if (mode === "dark") {
     return [

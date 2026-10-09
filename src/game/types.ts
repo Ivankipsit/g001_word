@@ -416,10 +416,6 @@ export function modeRequiresKeyLetter(mode: GameMode): boolean {
   return mode === "daily" || mode === "rare";
 }
 
-export function modeKeyLetterBonusOnly(mode: GameMode): boolean {
-  return mode === "keystone";
-}
-
 export const HINT_COST_DEFINE_BASE = 15;
 export const HINT_COST_DEFINE_STEP = 5;
 export const HINT_COST_GENERAL = 25;

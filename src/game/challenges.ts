@@ -167,7 +167,3 @@ export function pickDefinePuzzle(exclude: Set<string> = new Set()): DefinePuzzle
   }
   return candidates[Math.floor(Math.random() * candidates.length)]!;
 }
-
-export function affixById(id: string): AffixOption | undefined {
-  return AFFIX_OPTIONS.find((a) => a.id === id);
-}

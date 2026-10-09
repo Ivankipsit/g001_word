@@ -4,14 +4,6 @@ import { ALL_MODES, SAVE_VERSION } from "@/game/types";
 import { mergeModeSave, sameModeSave } from "@/game/saveMerge";
 import { normalizeProgress } from "@/game/progress";
 
-export interface RemoteGameSaveRow {
-  user_id: string;
-  mode: GameMode;
-  save: ModeSave;
-  save_version: number;
-  updated_at: string;
-}
-
 function normalizeModeSave(save: ModeSave, mode: GameMode): ModeSave {
   return {
     started: Boolean(save.started),

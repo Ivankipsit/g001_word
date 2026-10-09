@@ -35,6 +35,8 @@ Project: `nzklvxivpurprtysvqzw` → `https://nzklvxivpurprtysvqzw.supabase.co`
    drop table if exists public.game_saves cascade;
    drop table if exists public.profiles cascade;
    ```
+
+   Apply schema changes **before** deploying code that uses them. The client upserts `profiles.progress`, so a build running against an older schema fails profile sync.
 2. Auth → enable **Email** magic link.
 3. Auth → URL configuration:
    - **Site URL:** `https://wordforge.ashwinagilan.com`
@@ -56,7 +58,7 @@ Project: `nzklvxivpurprtysvqzw` → `https://nzklvxivpurprtysvqzw.supabase.co`
 
 Never set `service_role` in Vercel.
 
-4. Deploy once on the default `*.vercel.app` URL and confirm the app + service worker load.
+4. Deploy once on the default `*.vercel.app` URL and confirm the app + service worker load. Deploying with the `vercel` CLI instead of Git uploads the working folder; `.vercelignore` keeps the dictionary build inputs (~3.3GB) and local env files out.
 5. Project → **Domains** → add `wordforge.ashwinagilan.com`. Copy the CNAME target Vercel shows (usually `cname.vercel-dns.com`).
 
 ### 3. Porkbun DNS (`ashwinagilan.com`)
@@ -74,7 +76,9 @@ Wait until Vercel marks the domain **Valid** (HTTPS issued). Then open [https://
 - Mode picker + Settings / Lexicon from bottom nav
 - Lexicon loads; `/sw.js` present; offline play after first load
 - Guest progress survives refresh
-- Magic link → `/auth/callback` → sync (try **Echo**)
+- Magic link → `/auth/callback` → sync (try **Echo**); a second device sees the same streak and achievements
+- Finish a daily: card shows **Completed**, "Next in", and **Share**
+- Lexicon shows five rarity chips; Settings shows Achievements
 - Theme toggle; offline banner when network is off
 
 ## Modes

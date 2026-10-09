@@ -151,11 +151,19 @@ export function PlayScreen() {
   }, [tickCombo]);
 
   useEffect(() => {
-    if (!lastScorePop?.tierUp) return;
-    setTierFlash(true);
-    const t = window.setTimeout(() => setTierFlash(false), 450);
-    return () => window.clearTimeout(t);
-  }, [lastScorePop?.id, lastScorePop?.tierUp]);
+    let t: number | undefined;
+    const unsubscribe = useGameStore.subscribe((s, prev) => {
+      const pop = s.lastScorePop;
+      if (!pop?.tierUp || pop === prev.lastScorePop) return;
+      setTierFlash(true);
+      window.clearTimeout(t);
+      t = window.setTimeout(() => setTierFlash(false), 450);
+    });
+    return () => {
+      unsubscribe();
+      window.clearTimeout(t);
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

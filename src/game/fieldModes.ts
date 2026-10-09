@@ -11,7 +11,7 @@ import {
 } from "@/game/letters";
 import type { GameMode } from "@/game/types";
 
-export const FIELD_MODES = [
+const FIELD_MODES = [
   "pos",
   "sense",
   "inflect",

@@ -30,7 +30,7 @@ export async function shareOrCopy(payload: SharePayload): Promise<ShareResult> {
   }
 }
 
-export function appUrl(): string {
+function appUrl(): string {
   return typeof window !== "undefined" ? window.location.origin : "";
 }
 

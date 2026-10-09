@@ -13,13 +13,12 @@ export default function AuthCallbackPage() {
   const [message, setMessage] = useState("Signing you in…");
 
   useEffect(() => {
-    const client = getSupabaseBrowserClient();
-    if (!client) {
-      setMessage("Supabase is not configured.");
-      return;
-    }
-
     const run = async () => {
+      const client = getSupabaseBrowserClient();
+      if (!client) {
+        setMessage("Supabase is not configured.");
+        return;
+      }
       const url = new URL(window.location.href);
       const code = url.searchParams.get("code");
       const err = url.searchParams.get("error_description");

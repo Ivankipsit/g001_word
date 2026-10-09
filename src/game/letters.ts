@@ -4,8 +4,8 @@ import type { LanguageWorld } from "@/dictionary/LanguageWorld";
 const MIN_FORMABLE = 5;
 const RANDOM_ATTEMPTS = 80;
 export const FORGE_START_SIZE = 5;
-export const SCRAMBLE_LETTER_COUNT = 6;
-export const DAILY_LETTER_COUNT = 7;
+const SCRAMBLE_LETTER_COUNT = 6;
+const DAILY_LETTER_COUNT = 7;
 export const MIN_FORMABLE_WORDS = MIN_FORMABLE;
 export const MAX_LETTER_LEVEL = 10;
 
@@ -21,10 +21,6 @@ export function pickWeightedLetter(
     if (roll <= 0) return letter;
   }
   return entries[entries.length - 1]?.[0] ?? "E";
-}
-
-export function pickRandomStartLetters(count = 5): string[] {
-  return Array.from({ length: count }, () => pickWeightedLetter());
 }
 
 /** Unique weighted letters (no duplicates). */
@@ -82,7 +78,7 @@ export function canFormWordFromSet(word: string, letters: string[]): boolean {
  * Count dictionary words formable from a multiset pick
  * (length ≤ letters.length).
  */
-export function countFormableWords(
+function countFormableWords(
   letters: string[],
   world: LanguageWorld = EnglishWorld,
 ): number {

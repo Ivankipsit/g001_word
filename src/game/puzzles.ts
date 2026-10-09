@@ -1,9 +1,7 @@
 import { EnglishWorld } from "@/dictionary/english";
-import { utcDateString } from "@/game/letters";
 
 export const WORDLE_GUESSES = 6;
-export const WORDLE_LENGTHS = [4, 5, 6] as const;
-export type WordleLength = (typeof WORDLE_LENGTHS)[number];
+export type WordleLength = 4 | 5 | 6;
 export type TileMark = "correct" | "present" | "absent";
 
 const byLength = new Map<number, string[]>();
@@ -21,7 +19,7 @@ function lcgNext(x: number): number {
   return (Math.imul(x, 1664525) + 1013904223) >>> 0;
 }
 
-export function wordsOfLength(length: number): string[] {
+function wordsOfLength(length: number): string[] {
   const cached = byLength.get(length);
   if (cached) return cached;
   const list: string[] = [];
@@ -63,7 +61,7 @@ export function markGuess(guess: string, secret: string): TileMark[] {
 }
 
 /** Distinct pin indexes. Hard boards need at least 5 letters. */
-export function choosePinSlots(secret: string, locks: 1 | 2, seed: number): number[] {
+function choosePinSlots(secret: string, locks: 1 | 2, seed: number): number[] {
   const count = Math.min(locks, secret.length);
   const order = secret.split("").map((_, i) => i);
   let x = seed >>> 0;
@@ -129,10 +127,6 @@ export function pinBoardFor(secret: string, locks: 1 | 2, seedKey: string) {
     if (!locked.has(i)) pool.push(secret[i]!.toUpperCase());
   }
   return { slots, pool };
-}
-
-export function todayUtc(): string {
-  return utcDateString();
 }
 
 /** Indexes already shown as green in earlier Wordle guesses. */

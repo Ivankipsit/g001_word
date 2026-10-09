@@ -1,5 +1,5 @@
 /** Highest score any total can reach; shown as "999m". */
-export const POINTS_CAP = 999_999_999;
+const POINTS_CAP = 999_999_999;
 
 export function capPoints(n: number): number {
   return Math.min(POINTS_CAP, Math.max(0, Math.floor(n)));

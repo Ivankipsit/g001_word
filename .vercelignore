@@ -1,0 +1,18 @@
+# `vercel` CLI uploads ignore this file, not .gitignore. Git-based deploys only see tracked files.
+
+# Dictionary build inputs (~3.3GB). The app ships public/dictionary/*.json.gz.
+/scripts/kaikki.org-dictionary-English.jsonl
+/scripts/kaikki-en.jsonl
+/scripts/count_1w.txt
+/public/dictionary/english-words.json
+
+# Local env files; Vercel reads env vars from project settings.
+.env*
+!.env.example
+
+/.next/
+/out/
+/coverage
+/public/sw.js
+/public/swe-worker-*.js
+*.tsbuildinfo

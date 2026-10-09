@@ -71,10 +71,6 @@ export function loadEnglishDictionary(): Promise<void> {
   return loadPromise;
 }
 
-export function isEnglishDictionaryReady(): boolean {
-  return loaded && byWord.size > 0;
-}
-
 export const EnglishWorld: LanguageWorld = {
   id: "en",
   displayName: "English",

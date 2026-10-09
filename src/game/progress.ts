@@ -43,15 +43,6 @@ export function mergeProgress(a: PlayerProgress, b: PlayerProgress): PlayerProgr
   };
 }
 
-export function sameProgress(a: PlayerProgress, b: PlayerProgress): boolean {
-  return (
-    a.hintFreeSolves === b.hintFreeSolves &&
-    a.dailyDays.join(",") === b.dailyDays.join(",") &&
-    Object.keys(a.achievements).sort().join(",") ===
-      Object.keys(b.achievements).sort().join(",")
-  );
-}
-
 /** Daily modes: Lock / Wordle when the puzzle ends, Dawn Glyph at DAILY_GOAL words. */
 export function dailyComplete(mode: GameMode, save: ModeSave | undefined, today: string): boolean {
   if (!save?.started || save.dailyDateUtc !== today) return false;

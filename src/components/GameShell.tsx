@@ -2,21 +2,26 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  Alert,
   Badge,
   BottomNavigation,
   BottomNavigationAction,
   Box,
   CircularProgress,
   Paper,
+  Snackbar,
   Typography,
   useTheme,
 } from "@mui/material";
+import EmojiEventsRoundedIcon from "@mui/icons-material/EmojiEventsRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import StorefrontRoundedIcon from "@mui/icons-material/StorefrontRounded";
 import MenuBookRoundedIcon from "@mui/icons-material/MenuBookRounded";
 import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
 import { StartScreen } from "@/components/StartScreen";
 import { PlayScreen } from "@/components/PlayScreen";
+import { PinScreen } from "@/components/PinScreen";
+import { WordleScreen } from "@/components/WordleScreen";
 import { LexiconScreen } from "@/components/LexiconScreen";
 import { SettingsScreen } from "@/components/SettingsScreen";
 import { ShopScreen } from "@/components/ShopScreen";
@@ -24,13 +29,11 @@ import { OfflineBanner } from "@/components/OfflineBanner";
 import { useGameStore } from "@/game/store";
 import { canAffordAnyShopItem } from "@/game/shop";
 import type { GameMode, ScreenId } from "@/game/types";
-import { modeHasIdleShop, modeHasLetterShop } from "@/game/types";
-import { heroGradient, shellGradient } from "@/theme/theme";
+import { modeHasIdleShop, modeHasLetterShop, modeIsPin, modeIsWordle } from "@/game/types";
+import { heroGradient, shellGradient, shellMaxWidth } from "@/theme/theme";
 import { useCloudSync } from "@/lib/supabase/useCloudSync";
-import {
-  isEnglishDictionaryReady,
-  loadEnglishDictionary,
-} from "@/dictionary/english";
+import { loadEnglishClues } from "@/dictionary/clues";
+import { loadEnglishDictionary } from "@/dictionary/english";
 
 const allScreens: { id: ScreenId; label: string; icon: ReactNode }[] = [
   { id: "play", label: "Play", icon: <PlayArrowRoundedIcon /> },
@@ -57,8 +60,10 @@ export function GameShell() {
   const letterLevels = useGameStore((s) => s.letterLevels);
   const generators = useGameStore((s) => s.generators);
   const gameMode = useGameStore((s) => s.mode);
+  const lastAchievement = useGameStore((s) => s.lastAchievement);
+  const dismissAchievement = useGameStore((s) => s.dismissAchievement);
   const showShop = started && modeHasShop(gameMode);
-  const [dictReady, setDictReady] = useState(isEnglishDictionaryReady());
+  const [dictReady, setDictReady] = useState(false);
   const [dictError, setDictError] = useState<string | null>(null);
   const navScreens = useMemo(
     () => (showShop ? allScreens : allScreens.filter((s) => s.id !== "shop")),
@@ -72,7 +77,7 @@ export function GameShell() {
 
   useEffect(() => {
     let cancelled = false;
-    loadEnglishDictionary()
+    Promise.all([loadEnglishDictionary(), loadEnglishClues().catch(() => undefined)])
       .then(() => {
         if (!cancelled) setDictReady(true);
       })
@@ -114,7 +119,7 @@ export function GameShell() {
         }}
       >
         <Box sx={{ textAlign: "center" }}>
-          <CircularProgress color="primary" sx={{ mb: 2 }} />
+          {dictError ? null : <CircularProgress color="primary" sx={{ mb: 2 }} />}
           <Typography color="text.secondary" sx={{ fontWeight: 700 }}>
             {dictError ? `Lexicon error: ${dictError}` : "Loading lexicon…"}
           </Typography>
@@ -124,6 +129,8 @@ export function GameShell() {
   }
 
   const onPlayTab = screen === "play" || (screen === "shop" && !showShop);
+  /** Lexicon scrolls its own list inside the viewport instead of the page. */
+  const fitViewport = screen === "lexicon";
   const bg =
     !started && onPlayTab
       ? heroGradient(paletteMode)
@@ -132,7 +139,8 @@ export function GameShell() {
   return (
     <Box
       sx={{
-        minHeight: "100dvh",
+        ...(fitViewport ? { height: "100dvh", overflow: "hidden" } : { minHeight: "100dvh" }),
+        boxSizing: "border-box",
         display: "flex",
         flexDirection: "column",
         background: bg,
@@ -143,17 +151,50 @@ export function GameShell() {
       <Box
         sx={{
           flex: 1,
+          minHeight: 0,
           overflow: "auto",
-          maxWidth: 720,
+          maxWidth: shellMaxWidth,
           width: "100%",
           mx: "auto",
+          ...(fitViewport && { display: "flex", flexDirection: "column" }),
         }}
       >
-        {onPlayTab && (started ? <PlayScreen /> : <StartScreen />)}
+        {onPlayTab &&
+          (started ? (
+            modeIsWordle(gameMode) ? (
+              <WordleScreen />
+            ) : modeIsPin(gameMode) ? (
+              <PinScreen />
+            ) : (
+              <PlayScreen />
+            )
+          ) : (
+            <StartScreen />
+          ))}
         {screen === "shop" && showShop && <ShopScreen />}
         {screen === "lexicon" && <LexiconScreen />}
         {screen === "settings" && <SettingsScreen />}
       </Box>
+
+      <Snackbar
+        open={!!lastAchievement}
+        autoHideDuration={4000}
+        onClose={(_, reason) => {
+          if (reason !== "clickaway") dismissAchievement();
+        }}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        sx={{ bottom: { xs: 88, sm: 88 } }}
+      >
+        <Alert
+          icon={<EmojiEventsRoundedIcon sx={{ color: "#D4A017" }} />}
+          onClose={dismissAchievement}
+          variant="filled"
+          severity="info"
+          sx={{ fontWeight: 700, bgcolor: "grey.900", color: "#fff" }}
+        >
+          Achievement: {lastAchievement?.title}
+        </Alert>
+      </Snackbar>
 
       <Paper
         elevation={8}
@@ -171,7 +212,7 @@ export function GameShell() {
           showLabels
           value={screen === "shop" && !showShop ? "play" : screen}
           onChange={(_, v: ScreenId) => setScreen(v)}
-          sx={{ height: 64, maxWidth: 720, mx: "auto" }}
+          sx={{ height: 64, maxWidth: shellMaxWidth, mx: "auto", width: "100%" }}
         >
           {navScreens.map((s) => (
             <BottomNavigationAction

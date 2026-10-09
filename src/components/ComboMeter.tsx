@@ -39,7 +39,7 @@ export function ComboMeter({
   const name = COMBO_TIER_NAMES[mult];
   const windowMs = COMBO_TIER_RULES[mult].windowMs;
   const left = Math.max(0, expiresAt! - now);
-  const progress = (left / windowMs) * 100;
+  const progress = Math.min(100, (left / windowMs) * 100);
 
   return (
     <Box

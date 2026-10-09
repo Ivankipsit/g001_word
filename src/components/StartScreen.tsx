@@ -7,6 +7,7 @@ import {
   Stack,
   Typography,
   Chip,
+  Grid,
   ToggleButton,
   ToggleButtonGroup,
   TextField,
@@ -29,7 +30,13 @@ import TextFieldsRoundedIcon from "@mui/icons-material/TextFieldsRounded";
 import WhatshotRoundedIcon from "@mui/icons-material/WhatshotRounded";
 import LocalFireDepartmentRoundedIcon from "@mui/icons-material/LocalFireDepartmentRounded";
 import GraphicEqRoundedIcon from "@mui/icons-material/GraphicEqRounded";
+import PushPinRoundedIcon from "@mui/icons-material/PushPinRounded";
+import GridOnRoundedIcon from "@mui/icons-material/GridOnRounded";
+import ShareRoundedIcon from "@mui/icons-material/ShareRounded";
+import AutoStoriesRoundedIcon from "@mui/icons-material/AutoStoriesRounded";
 import { EnglishWorld } from "@/dictionary/english";
+import { invitePayload } from "@/lib/share";
+import { useShare } from "@/components/useShare";
 import { LetterTile } from "@/components/LetterTile";
 import {
   AFFIX_OPTIONS,
@@ -53,9 +60,21 @@ import {
   playabilityTip,
   utcDateString,
 } from "@/game/letters";
+import {
+  dailyPinSecret,
+  dailyWord,
+  formableSecret,
+  pinBoardFor,
+  randomWordOfLength,
+  type WordleLength,
+} from "@/game/puzzles";
 import { useGameStore } from "@/game/store";
-import type { GameMode } from "@/game/types";
-import { modeBlurb, modeDisplayName } from "@/game/types";
+import { isFieldMode, openingFor, type FieldMode } from "@/game/fieldModes";
+import { modeBlurb, modeDisplayName, modeIsDaily, type GameMode } from "@/game/types";
+import { currentStreak, dailyComplete } from "@/game/progress";
+import { wordOfDay } from "@/game/wordOfDay";
+import { RARITY_COLOR, RARITY_LABEL } from "@/game/rarity";
+import { dailyResultPayload } from "@/lib/share";
 type Step =
   | "mode"
   | "forge"
@@ -63,7 +82,11 @@ type Step =
   | "scramble"
   | "daily"
   | "affix"
-  | "rare";
+  | "rare"
+  | "pin"
+  | "pinDaily"
+  | "wordle"
+  | "wordleDaily";
 
 const SCRAMBLE_PRESETS = [
   { label: "1 min", sec: 60 },
@@ -71,11 +94,47 @@ const SCRAMBLE_PRESETS = [
   { label: "5 min", sec: 300 },
 ] as const;
 
+const CLUE_MODES: FieldMode[] = [
+  "pos",
+  "sense",
+  "inflect",
+  "synonym",
+  "antonym",
+  "blank",
+  "origin",
+  "homophone",
+  "pronounce",
+  "register",
+  "kind",
+];
+
+const THREAD_MODES: FieldMode[] = ["kin", "relay", "double", "trap", "decoy", "hunt"];
+
+function hoursMinutes(ms: number): string {
+  const totalMin = Math.ceil(ms / 60_000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+const setupColumnSx = {
+  maxWidth: { xs: "100%", md: 640 },
+  width: "100%",
+  mx: "auto",
+  flex: 1,
+  display: "flex",
+  flexDirection: "column",
+} as const;
+
 export function StartScreen() {
   const startGame = useGameStore((s) => s.startGame);
   const resumeMode = useGameStore((s) => s.resumeMode);
   const clearModeSave = useGameStore((s) => s.clearModeSave);
   const modes = useGameStore((s) => s.modes);
+  const dailyDays = useGameStore((s) => s.progress.dailyDays);
+  const displayName = useGameStore((s) => s.settings.displayName);
+  const [wotdOpen, setWotdOpen] = useState(false);
+  const { share, feedback } = useShare();
   const [step, setStep] = useState<Step>("mode");
   const [picked, setPicked] = useState<string[]>([]);
   const [keystone, setKeystone] = useState<string | null>(null);
@@ -85,9 +144,19 @@ export function StartScreen() {
   const [affix, setAffix] = useState<AffixOption | null>(null);
   const [rareLetter, setRareLetter] = useState<string | null>(null);
   const [resumeChoice, setResumeChoice] = useState<GameMode | null>(null);
+  const [pinLocks, setPinLocks] = useState<1 | 2>(1);
+  const [wordleLength, setWordleLength] = useState<WordleLength>(5);
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [fieldError, setFieldError] = useState<string | null>(null);
 
   const today = utcDateString();
   const dailyBoard = useMemo(() => dailyBoardForDate(today), [today]);
+  const wotd = useMemo(() => wordOfDay(today), [today]);
+  const streak = currentStreak(dailyDays, today);
+  const wotdFound = useMemo(
+    () => Boolean(wotd && Object.values(modes).some((s) => s?.discoveredWords?.[wotd.word])),
+    [wotd, modes],
+  );
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -123,7 +192,12 @@ export function StartScreen() {
   const hasSave = (m: GameMode) => {
     const s = modes[m];
     if (!s?.started) return false;
-    if (m === "daily" && s.dailyDateUtc !== today) return false;
+    if (
+      (m === "daily" || m === "pinDaily" || m === "wordleDaily") &&
+      s.dailyDateUtc !== today
+    ) {
+      return false;
+    }
     return true;
   };
 
@@ -170,11 +244,68 @@ export function StartScreen() {
         mode: "echo",
         letters: pickPlayableStartLetters(FORGE_START_SIZE),
       });
+    } else if (m === "pin") {
+      setPinLocks(1);
+      setPicked([]);
+      setPinError(null);
+      setStep("pin");
+    } else if (m === "pinDaily") {
+      setPinLocks(1);
+      setPinError(null);
+      setStep("pinDaily");
+    } else if (m === "wordle") {
+      setWordleLength(5);
+      setStep("wordle");
+    } else if (m === "wordleDaily") {
+      setWordleLength(5);
+      setStep("wordleDaily");
+    } else if (isFieldMode(m)) {
+      const opening = openingFor(m);
+      if (!opening) {
+        setFieldError("Clue list is not ready yet.");
+        return;
+      }
+      setFieldError(null);
+      startGame({ mode: m, ...opening });
     }
+  };
+
+  const dailyDone = (m: GameMode) => modeIsDaily(m) && dailyComplete(m, modes[m], today);
+
+  const cardChip = (m: GameMode) => {
+    if (!hasSave(m)) return undefined;
+    return dailyDone(m) ? "Completed" : "Continue";
+  };
+
+  const dailyFooter = (m: GameMode) => {
+    const save = modes[m];
+    if (!save || !dailyDone(m)) return null;
+    return (
+      <Stack
+        direction="row"
+        sx={{ alignItems: "center", justifyContent: "space-between", gap: 1, px: 0.5 }}
+      >
+        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+          Next in {hoursMinutes(dailyCountdown)}
+        </Typography>
+        <Button
+          size="small"
+          startIcon={<ShareRoundedIcon fontSize="small" />}
+          onClick={() => share(dailyResultPayload(m, save))}
+          sx={{ minHeight: 28, py: 0 }}
+        >
+          Share
+        </Button>
+      </Stack>
+    );
   };
 
   const openMode = (m: GameMode) => {
     if (hasSave(m)) {
+      if (modeIsDaily(m)) {
+        resumeMode(m);
+        return;
+      }
       setResumeChoice(m);
       return;
     }
@@ -212,6 +343,52 @@ export function StartScreen() {
       mode: "scramble",
       letters,
       scrambleDurationSec: scrambleSec,
+    });
+  };
+
+  const startWordle = (daily: boolean) => {
+    const secret = daily
+      ? dailyWord(today, wordleLength)
+      : randomWordOfLength(wordleLength);
+    if (!secret) return;
+    startGame({
+      mode: daily ? "wordleDaily" : "wordle",
+      letters: [],
+      wordleLength,
+      wordleSecret: secret,
+    });
+  };
+
+  const startPinDaily = () => {
+    const secret = dailyPinSecret(today, pinLocks);
+    if (!secret) return;
+    const board = pinBoardFor(secret, pinLocks, `${today}:${pinLocks}`);
+    startGame({
+      mode: "pinDaily",
+      letters: board.pool,
+      pinLocks,
+      pinSecret: secret,
+      pinSlots: board.slots,
+    });
+  };
+
+  const startPin = () => {
+    const secret = formableSecret(picked, pinLocks, new Set());
+    if (!secret) {
+      setPinError(
+        pinLocks === 2
+          ? "No 5–8 letter word fits these letters. Add a vowel."
+          : "No 4–7 letter word fits these letters.",
+      );
+      return;
+    }
+    const board = pinBoardFor(secret, pinLocks, secret);
+    startGame({
+      mode: "pin",
+      letters: picked,
+      pinLocks,
+      pinSecret: secret,
+      pinSlots: board.slots,
     });
   };
 
@@ -254,167 +431,352 @@ export function StartScreen() {
         minHeight: "calc(100dvh - 72px)",
         display: "flex",
         flexDirection: "column",
-        px: 2,
-        py: 3,
+        px: { xs: 2, md: 3 },
+        py: { xs: 2, md: 3 },
       }}
     >
       {step === "mode" && (
-        <Stack
-          spacing={3}
-          sx={{
-            flex: 1,
-            maxWidth: 520,
-            width: "100%",
-            mx: "auto",
-            justifyContent: "center",
-          }}
-        >
-          <Stack spacing={1} sx={{ textAlign: "center" }}>
+        <Stack spacing={3} sx={{ width: "100%", maxWidth: 1100, mx: "auto" }}>
+          <Stack spacing={0.75} sx={{ textAlign: "center", alignItems: "center" }}>
             <Typography
               variant="h2"
               component="h1"
               sx={{
                 fontWeight: 900,
                 color: "primary.main",
-                fontSize: { xs: "2.75rem", sm: "3.4rem" },
+                fontSize: { xs: "2.25rem", sm: "2.75rem" },
                 lineHeight: 1.05,
                 letterSpacing: "-0.03em",
               }}
             >
               Word Forge
             </Typography>
-            <Typography color="text.secondary" sx={{ maxWidth: 380, mx: "auto" }}>
-              Build words from your letters. Progress is saved separately per mode.
+            <Typography color="text.secondary">
+              Each mode keeps its own save.
             </Typography>
-            <Chip
-              label={`${EnglishWorld.wordCount.toLocaleString()} words · ages 13+`}
-              size="small"
-              sx={{ alignSelf: "center", bgcolor: "background.paper" }}
-            />
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+              <Chip
+                label={`${EnglishWorld.wordCount.toLocaleString()} words · ages 13+`}
+                size="small"
+                sx={{ bgcolor: "background.paper" }}
+              />
+              <Button
+                size="small"
+                startIcon={<ShareRoundedIcon />}
+                onClick={() => share(invitePayload(displayName))}
+              >
+                Invite friends
+              </Button>
+            </Stack>
+            {feedback}
+            {fieldError && (
+              <Typography color="warning.main" sx={{ fontWeight: 700 }}>
+                {fieldError}
+              </Typography>
+            )}
           </Stack>
 
-          <Stack spacing={2.5}>
-            <Stack spacing={0.75}>
-              <SectionLabel>Classic</SectionLabel>
-              <ModeCard
-                title={modeDisplayName("forge")}
-                description={modeBlurb("forge")}
-                icon={<ConstructionRoundedIcon sx={{ fontSize: 36 }} />}
-                onClick={() => openMode("forge")}
-                accent="primary"
-                featured
-                continueLabel={hasSave("forge") ? "Continue" : undefined}
-              />
-            </Stack>
-
-            <Stack spacing={0.75}>
-              <SectionLabel>Daily</SectionLabel>
-              <ModeCard
-                title={modeDisplayName("daily")}
-                description={`${modeBlurb("daily")} · key ${dailyBoard.keyLetter}`}
-                icon={<TodayRoundedIcon sx={{ fontSize: 28 }} />}
-                onClick={() => openMode("daily")}
-                accent="secondary"
-                continueLabel={hasSave("daily") ? "Continue" : undefined}
-              />
-            </Stack>
-
-            <Stack spacing={0.75}>
-              <SectionLabel>Timed</SectionLabel>
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 1.25,
-                }}
+          <Grid container spacing={{ xs: 1.25, md: 2 }}>
+            {wotd && (
+              <Grid size={12}>
+                <Box
+                  component="button"
+                  type="button"
+                  onClick={() => setWotdOpen(true)}
+                  sx={{
+                    width: "100%",
+                    textAlign: "left",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1.5,
+                    px: 2,
+                    py: 1.25,
+                    borderRadius: 2.5,
+                    border: "1.5px solid",
+                    borderColor: RARITY_COLOR[wotd.rarity],
+                    bgcolor: "background.paper",
+                    color: "text.primary",
+                    cursor: "pointer",
+                    font: "inherit",
+                  }}
+                >
+                  <AutoStoriesRoundedIcon sx={{ color: RARITY_COLOR[wotd.rarity] }} />
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography
+                      variant="overline"
+                      color="text.secondary"
+                      sx={{ fontWeight: 800, lineHeight: 1.4, display: "block" }}
+                    >
+                      Word of the day
+                    </Typography>
+                    <Typography sx={{ fontWeight: 900, fontSize: "1.15rem" }} noWrap>
+                      {wotd.word}
+                    </Typography>
+                  </Box>
+                  <Chip
+                    label={RARITY_LABEL[wotd.rarity]}
+                    size="small"
+                    sx={{ fontWeight: 700, bgcolor: RARITY_COLOR[wotd.rarity], color: "#fff" }}
+                  />
+                </Box>
+              </Grid>
+            )}
+            <Grid size={12}>
+              <Stack
+                direction="row"
+                sx={{ alignItems: "center", justifyContent: "space-between", gap: 1 }}
               >
+                <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                  <SectionLabel>Today</SectionLabel>
+                  {streak >= 2 && (
+                    <Chip
+                      icon={<LocalFireDepartmentRoundedIcon />}
+                      label={`${streak}-day streak`}
+                      size="small"
+                      color="warning"
+                      sx={{ fontWeight: 800 }}
+                    />
+                  )}
+                </Stack>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                  Resets in {formatCountdown(dailyCountdown)}
+                </Typography>
+              </Stack>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 4 }} sx={{ display: "flex" }}>
+              <ModeCell>
+                <ModeCard
+                  title={modeDisplayName("daily")}
+                  description={`Shared letters · key ${dailyBoard.keyLetter}`}
+                  icon={<TodayRoundedIcon sx={{ fontSize: 26 }} />}
+                  onClick={() => openMode("daily")}
+                  accent="secondary"
+                  compact
+                  continueLabel={cardChip("daily")}
+                  finished={dailyDone("daily")}
+                />
+                {dailyFooter("daily")}
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 4 }} sx={{ display: "flex" }}>
+              <ModeCell>
+                <ModeCard
+                  title={modeDisplayName("pinDaily")}
+                  description="One word, letters already pinned"
+                  icon={<PushPinRoundedIcon sx={{ fontSize: 26 }} />}
+                  onClick={() => openMode("pinDaily")}
+                  accent="secondary"
+                  compact
+                  continueLabel={cardChip("pinDaily")}
+                  finished={dailyDone("pinDaily")}
+                />
+                {dailyFooter("pinDaily")}
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 4 }} sx={{ display: "flex" }}>
+              <ModeCell>
+                <ModeCard
+                  title={modeDisplayName("wordleDaily")}
+                  description="Six guesses, one shared word"
+                  icon={<GridOnRoundedIcon sx={{ fontSize: 26 }} />}
+                  onClick={() => openMode("wordleDaily")}
+                  accent="secondary"
+                  compact
+                  continueLabel={cardChip("wordleDaily")}
+                  finished={dailyDone("wordleDaily")}
+                />
+                {dailyFooter("wordleDaily")}
+              </ModeCell>
+            </Grid>
+
+            <Grid size={12}>
+              <SectionLabel>Play</SectionLabel>
+            </Grid>
+            <Grid size={{ xs: 12, md: 6 }} sx={{ display: "flex" }}>
+              <ModeCell>
+                <ModeCard
+                  title={modeDisplayName("forge")}
+                  description="Choose your letters and build at your own pace."
+                  icon={<ConstructionRoundedIcon sx={{ fontSize: 36 }} />}
+                  onClick={() => openMode("forge")}
+                  accent="primary"
+                  featured
+                  continueLabel={hasSave("forge") ? "Continue" : undefined}
+                />
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+              <ModeCell>
+                <ModeCard
+                  title={modeDisplayName("wordle")}
+                  description="4, 5, or 6 letters"
+                  icon={<GridOnRoundedIcon sx={{ fontSize: 26 }} />}
+                  onClick={() => openMode("wordle")}
+                  accent="primary"
+                  compact
+                  continueLabel={hasSave("wordle") ? "Continue" : undefined}
+                />
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+              <ModeCell>
+                <ModeCard
+                  title={modeDisplayName("pin")}
+                  description="Fill around the pins"
+                  icon={<PushPinRoundedIcon sx={{ fontSize: 26 }} />}
+                  onClick={() => openMode("pin")}
+                  accent="primary"
+                  compact
+                  continueLabel={hasSave("pin") ? "Continue" : undefined}
+                />
+              </ModeCell>
+            </Grid>
+
+            <Grid size={12}>
+              <SectionLabel>More</SectionLabel>
+            </Grid>
+            <Grid size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+              <ModeCell>
                 <ModeCard
                   title={modeDisplayName("scramble")}
-                  description={modeBlurb("scramble")}
+                  description="Score before the clock"
                   icon={<TimerRoundedIcon sx={{ fontSize: 26 }} />}
                   onClick={() => openMode("scramble")}
                   accent="secondary"
                   compact
                   continueLabel={hasSave("scramble") ? "Continue" : undefined}
                 />
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+              <ModeCell>
                 <ModeCard
                   title={modeDisplayName("heat")}
-                  description={modeBlurb("heat")}
+                  description="Push the combo"
                   icon={<LocalFireDepartmentRoundedIcon sx={{ fontSize: 26 }} />}
                   onClick={() => openMode("heat")}
                   accent="secondary"
                   compact
                   continueLabel={hasSave("heat") ? "Continue" : undefined}
                 />
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+              <ModeCell>
                 <ModeCard
                   title={modeDisplayName("define")}
-                  description={modeBlurb("define")}
+                  description="Spell the meaning"
                   icon={<MenuBookRoundedIcon sx={{ fontSize: 26 }} />}
                   onClick={() => openMode("define")}
                   accent="secondary"
                   compact
                   continueLabel={hasSave("define") ? "Continue" : undefined}
                 />
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+              <ModeCell>
                 <ModeCard
                   title={modeDisplayName("echo")}
-                  description={modeBlurb("echo")}
+                  description="Chain the last letter"
                   icon={<GraphicEqRoundedIcon sx={{ fontSize: 26 }} />}
                   onClick={() => openMode("echo")}
                   accent="secondary"
                   compact
                   continueLabel={hasSave("echo") ? "Continue" : undefined}
                 />
-              </Box>
-            </Stack>
-
-            <Stack spacing={0.75}>
-              <SectionLabel>Challenge</SectionLabel>
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 1.25,
-                }}
-              >
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+              <ModeCell>
                 <ModeCard
                   title={modeDisplayName("keystone")}
-                  description={modeBlurb("keystone")}
+                  description="Bonus on one letter"
                   icon={<VpnKeyRoundedIcon sx={{ fontSize: 26 }} />}
                   onClick={() => openMode("keystone")}
                   accent="secondary"
                   compact
                   continueLabel={hasSave("keystone") ? "Continue" : undefined}
                 />
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+              <ModeCell>
                 <ModeCard
                   title={modeDisplayName("rare")}
-                  description={modeBlurb("rare")}
+                  description="A rare letter required"
                   icon={<WhatshotRoundedIcon sx={{ fontSize: 26 }} />}
                   onClick={() => openMode("rare")}
                   accent="secondary"
                   compact
                   continueLabel={hasSave("rare") ? "Continue" : undefined}
                 />
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+              <ModeCell>
                 <ModeCard
                   title={modeDisplayName("ladder")}
-                  description={modeBlurb("ladder")}
+                  description="Longer each word"
                   icon={<StairsRoundedIcon sx={{ fontSize: 26 }} />}
                   onClick={() => openMode("ladder")}
                   accent="secondary"
                   compact
                   continueLabel={hasSave("ladder") ? "Continue" : undefined}
                 />
+              </ModeCell>
+            </Grid>
+            <Grid size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+              <ModeCell>
                 <ModeCard
                   title={modeDisplayName("affix")}
-                  description={modeBlurb("affix")}
+                  description="Prefix or suffix"
                   icon={<TextFieldsRoundedIcon sx={{ fontSize: 26 }} />}
                   onClick={() => openMode("affix")}
                   accent="secondary"
                   compact
                   continueLabel={hasSave("affix") ? "Continue" : undefined}
                 />
-              </Box>
-            </Stack>
-          </Stack>
+              </ModeCell>
+            </Grid>
+
+            <Grid size={12}>
+              <SectionLabel>Clues</SectionLabel>
+            </Grid>
+            {CLUE_MODES.map((m) => (
+              <Grid key={m} size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+                <ModeCell>
+                  <ModeCard
+                    title={modeDisplayName(m)}
+                    description={modeBlurb(m)}
+                    icon={<MenuBookRoundedIcon sx={{ fontSize: 26 }} />}
+                    onClick={() => openMode(m)}
+                    accent="secondary"
+                    compact
+                    continueLabel={cardChip(m)}
+                  />
+                </ModeCell>
+              </Grid>
+            ))}
+            <Grid size={12}>
+              <SectionLabel>Threads</SectionLabel>
+            </Grid>
+            {THREAD_MODES.map((m) => (
+              <Grid key={m} size={{ xs: 6, md: 3 }} sx={{ display: "flex" }}>
+                <ModeCell>
+                  <ModeCard
+                    title={modeDisplayName(m)}
+                    description={modeBlurb(m)}
+                    icon={<GraphicEqRoundedIcon sx={{ fontSize: 26 }} />}
+                    onClick={() => openMode(m)}
+                    accent="secondary"
+                    compact
+                    continueLabel={cardChip(m)}
+                  />
+                </ModeCell>
+              </Grid>
+            ))}
+          </Grid>
 
           <Dialog
             open={!!resumeChoice}
@@ -429,34 +791,59 @@ export function StartScreen() {
               <Typography color="text.secondary">
                 You have a saved run. Continue where you left off, or start a new
                 game for this mode only (other modes stay saved).
-                {resumeChoice === "daily"
-                  ? " New game resets today’s progress but keeps today’s Dawn Glyph board."
-                  : ""}
               </Typography>
             </DialogContent>
-            <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+            <DialogActions sx={{ px: 3, pb: 2, gap: 1, flexWrap: "wrap" }}>
               <Button onClick={() => setResumeChoice(null)}>Cancel</Button>
-              <Button variant="outlined" color="secondary" onClick={onNewGame}>
-                New game
-              </Button>
+              {resumeChoice && !modeIsDaily(resumeChoice) && (
+                <Button variant="outlined" color="secondary" onClick={onNewGame}>
+                  New game
+                </Button>
+              )}
               <Button variant="contained" onClick={onContinueSave}>
                 Continue
               </Button>
             </DialogActions>
+          </Dialog>
+
+          <Dialog open={wotdOpen && !!wotd} onClose={() => setWotdOpen(false)} fullWidth maxWidth="xs">
+            {wotd && (
+              <>
+                <DialogTitle sx={{ fontWeight: 900 }}>{wotd.word}</DialogTitle>
+                <DialogContent>
+                  <Chip
+                    label={RARITY_LABEL[wotd.rarity]}
+                    size="small"
+                    sx={{
+                      mb: 1.5,
+                      fontWeight: 700,
+                      bgcolor: RARITY_COLOR[wotd.rarity],
+                      color: "#fff",
+                    }}
+                  />
+                  <Typography>{wotd.definition}</Typography>
+                  <Typography
+                    variant="body2"
+                    sx={{ mt: 1.5, fontWeight: 700 }}
+                    color={wotdFound ? "success.main" : "text.secondary"}
+                  >
+                    {wotdFound
+                      ? "In your Lexicon."
+                      : "Not in your Lexicon yet. Find it in any mode."}
+                  </Typography>
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2 }}>
+                  <Button onClick={() => setWotdOpen(false)}>Close</Button>
+                </DialogActions>
+              </>
+            )}
           </Dialog>
         </Stack>
       )}
 
       {step === "forge" && (
         <Box
-          sx={{
-            maxWidth: 520,
-            width: "100%",
-            mx: "auto",
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-          }}
+          sx={setupColumnSx}
         >
           <Button
             startIcon={<ArrowBackRoundedIcon />}
@@ -574,14 +961,7 @@ export function StartScreen() {
 
       {step === "keystone" && (
         <Box
-          sx={{
-            maxWidth: 520,
-            width: "100%",
-            mx: "auto",
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-          }}
+          sx={setupColumnSx}
         >
           <Button
             startIcon={<ArrowBackRoundedIcon />}
@@ -663,14 +1043,7 @@ export function StartScreen() {
 
       {step === "scramble" && (
         <Box
-          sx={{
-            maxWidth: 520,
-            width: "100%",
-            mx: "auto",
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-          }}
+          sx={setupColumnSx}
         >
           <Button
             startIcon={<ArrowBackRoundedIcon />}
@@ -754,14 +1127,7 @@ export function StartScreen() {
 
       {step === "daily" && (
         <Box
-          sx={{
-            maxWidth: 520,
-            width: "100%",
-            mx: "auto",
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-          }}
+          sx={setupColumnSx}
         >
           <Button
             startIcon={<ArrowBackRoundedIcon />}
@@ -833,14 +1199,7 @@ export function StartScreen() {
 
       {step === "affix" && (
         <Box
-          sx={{
-            maxWidth: 520,
-            width: "100%",
-            mx: "auto",
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-          }}
+          sx={setupColumnSx}
         >
           <Button
             startIcon={<ArrowBackRoundedIcon />}
@@ -855,26 +1214,21 @@ export function StartScreen() {
           <Typography color="text.secondary" sx={{ mb: 2 }}>
             Pick a prefix or suffix. Every valid word must include it.
           </Typography>
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))",
-              gap: 1,
-              mb: 2,
-            }}
-          >
+          <Grid container spacing={1} sx={{ mb: 2 }}>
             {AFFIX_OPTIONS.map((opt) => (
-              <Button
-                key={opt.id}
-                variant={affix?.id === opt.id ? "contained" : "outlined"}
-                color="secondary"
-                onClick={() => setAffix(opt)}
-                sx={{ fontWeight: 800 }}
-              >
-                {opt.label}
-              </Button>
+              <Grid key={opt.id} size={{ xs: 6, sm: 4, md: 3 }}>
+                <Button
+                  fullWidth
+                  variant={affix?.id === opt.id ? "contained" : "outlined"}
+                  color="secondary"
+                  onClick={() => setAffix(opt)}
+                  sx={{ fontWeight: 800 }}
+                >
+                  {opt.label}
+                </Button>
+              </Grid>
             ))}
-          </Box>
+          </Grid>
           <Box sx={{ flex: 1 }} />
           <Button
             variant="contained"
@@ -891,14 +1245,7 @@ export function StartScreen() {
 
       {step === "rare" && (
         <Box
-          sx={{
-            maxWidth: 520,
-            width: "100%",
-            mx: "auto",
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-          }}
+          sx={setupColumnSx}
         >
           <Button
             startIcon={<ArrowBackRoundedIcon />}
@@ -950,6 +1297,151 @@ export function StartScreen() {
           </Button>
         </Box>
       )}
+
+      {(step === "pin" || step === "pinDaily") && (
+        <Box sx={setupColumnSx}>
+          <Button
+            startIcon={<ArrowBackRoundedIcon />}
+            onClick={() => setStep("mode")}
+            sx={{ alignSelf: "flex-start", mb: 1 }}
+          >
+            Modes
+          </Button>
+          <Typography variant="h4" sx={{ fontWeight: 900, mb: 0.5 }}>
+            {step === "pinDaily" ? "Daily Lock" : "Lockstep"}
+          </Typography>
+          <Typography color="text.secondary" sx={{ mb: 2 }}>
+            A secret word has one or two letters already sitting in their real
+            slots. Fill the rest. Hard words are at least 5 letters.
+          </Typography>
+          <ToggleButtonGroup
+            exclusive
+            fullWidth
+            value={pinLocks}
+            onChange={(_, v: 1 | 2 | null) => {
+              if (v) setPinLocks(v);
+            }}
+            sx={{ mb: 2 }}
+          >
+            <ToggleButton value={1}>Easy · 1 pin</ToggleButton>
+            <ToggleButton value={2}>Hard · 2 pins</ToggleButton>
+          </ToggleButtonGroup>
+          {step === "pin" && (
+            <>
+              <Typography color="text.secondary" sx={{ mb: 1 }}>
+                Pick 4–5 letters. The secret will be spellable from them.
+              </Typography>
+              <Stack direction="row" spacing={0.75} sx={{ mb: 1, flexWrap: "wrap" }}>
+                {picked.map((L, i) => (
+                  <LetterTile key={`${L}-${i}`} letter={L} size="sm" onClick={() => removeAt(i)} />
+                ))}
+              </Stack>
+              <Button onClick={randomize} sx={{ mb: 1, alignSelf: "flex-start" }}>
+                Random letters
+              </Button>
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(44px, 1fr))",
+                  gap: 1,
+                  mb: 2,
+                }}
+              >
+                {EnglishWorld.alphabet.map((L) => (
+                  <LetterTile
+                    key={L}
+                    letter={L}
+                    size="sm"
+                    selected={picked.includes(L)}
+                    onClick={() => toggle(L)}
+                  />
+                ))}
+              </Box>
+            </>
+          )}
+          {pinError && (
+            <Typography color="warning.main" sx={{ mb: 1, fontWeight: 700 }}>
+              {pinError}
+            </Typography>
+          )}
+          <Button
+            variant="contained"
+            size="large"
+            disabled={step === "pin" && picked.length < 4}
+            startIcon={<CheckRoundedIcon />}
+            onClick={step === "pinDaily" ? startPinDaily : startPin}
+          >
+            Start
+          </Button>
+        </Box>
+      )}
+
+      {(step === "wordle" || step === "wordleDaily") && (
+        <Box sx={setupColumnSx}>
+          <Button
+            startIcon={<ArrowBackRoundedIcon />}
+            onClick={() => setStep("mode")}
+            sx={{ alignSelf: "flex-start", mb: 1 }}
+          >
+            Modes
+          </Button>
+          <Typography variant="h4" sx={{ fontWeight: 900, mb: 0.5 }}>
+            {step === "wordleDaily" ? "Daily Wordle" : "Wordle"}
+          </Typography>
+          <Typography color="text.secondary" sx={{ mb: 2 }}>
+            Guess a dictionary word in six tries. Tiles show a right slot, a
+            letter in the wrong slot, or a miss.
+            {step === "wordleDaily"
+              ? " Today’s word for each length is the same for everyone."
+              : ""}
+          </Typography>
+          <ToggleButtonGroup
+            exclusive
+            fullWidth
+            value={wordleLength}
+            onChange={(_, v: WordleLength | null) => {
+              if (v) setWordleLength(v);
+            }}
+            sx={{ mb: 2 }}
+          >
+            <ToggleButton value={4}>4 letters</ToggleButton>
+            <ToggleButton value={5}>5 letters</ToggleButton>
+            <ToggleButton value={6}>6 letters</ToggleButton>
+          </ToggleButtonGroup>
+          <Button
+            variant="contained"
+            size="large"
+            startIcon={<CheckRoundedIcon />}
+            onClick={() => startWordle(step === "wordleDaily")}
+          >
+            Start
+          </Button>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function ModeCell({
+  label,
+  children,
+}: {
+  label?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Box
+      sx={{
+        flex: 1,
+        width: "100%",
+        minWidth: 0,
+        display: "flex",
+        flexDirection: "column",
+        gap: 0.75,
+      }}
+    >
+      {label ? <SectionLabel>{label}</SectionLabel> : null}
+      {children}
     </Box>
   );
 }
@@ -974,6 +1466,7 @@ function ModeCard({
   featured,
   compact,
   continueLabel,
+  finished,
 }: {
   title: string;
   description: string;
@@ -983,13 +1476,18 @@ function ModeCard({
   featured?: boolean;
   compact?: boolean;
   continueLabel?: string;
+  finished?: boolean;
 }) {
   const iconEl = (
     <Box
       sx={{
         color: accent === "primary" ? "primary.main" : "secondary.main",
         display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
         flexShrink: 0,
+        width: compact ? 28 : 40,
+        height: compact ? 28 : 40,
         lineHeight: 0,
       }}
     >
@@ -1011,6 +1509,7 @@ function ModeCard({
         sx={{
           fontSize: compact ? "0.78rem" : "0.875rem",
           lineHeight: 1.35,
+          minHeight: compact ? "2.7em" : undefined,
         }}
       >
         {description}
@@ -1022,8 +1521,9 @@ function ModeCard({
     <Chip
       label={continueLabel}
       size="small"
-      variant="outlined"
+      variant={finished ? "filled" : "outlined"}
       color="success"
+      icon={finished ? <CheckRoundedIcon /> : undefined}
       sx={{ fontWeight: 700, height: 22, flexShrink: 0 }}
     />
   ) : null;
@@ -1042,9 +1542,10 @@ function ModeCard({
         color: "text.primary",
         p: featured ? 2.5 : compact ? 1.5 : 2,
         cursor: "pointer",
-        minHeight: featured ? 112 : compact ? 108 : 88,
-        height: "100%",
+        minHeight: featured ? 112 : compact ? 132 : 88,
+        flex: 1,
         width: "100%",
+        alignSelf: "stretch",
         display: "flex",
         flexDirection: compact ? "column" : "row",
         gap: compact ? 0.75 : 1.5,
@@ -1073,7 +1574,12 @@ function ModeCard({
           <Stack
             direction="row"
             spacing={1}
-            sx={{ width: "100%", alignItems: "center", justifyContent: "space-between" }}
+            sx={{
+              width: "100%",
+              minHeight: 28,
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
           >
             {iconEl}
             {continueChip}

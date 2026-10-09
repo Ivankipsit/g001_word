@@ -9,6 +9,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Grid,
   IconButton,
   Stack,
   Typography,
@@ -26,11 +27,15 @@ import AppsRoundedIcon from "@mui/icons-material/AppsRounded";
 import LightbulbRoundedIcon from "@mui/icons-material/LightbulbRounded";
 import { LetterTile } from "@/components/LetterTile";
 import { ScorePop } from "@/components/ScorePop";
+import { Points } from "@/components/Points";
 import { ComboMeter } from "@/components/ComboMeter";
+import { isFieldMode } from "@/game/fieldModes";
 import { useGameStore } from "@/game/store";
 import { totalCps } from "@/game/shop";
 import { formatCps } from "@/game/idle";
+import { PuzzleHint } from "@/components/PuzzleHint";
 import {
+  DAILY_GOAL,
   formatCountdown,
   msUntilNextUtcDay,
 } from "@/game/letters";
@@ -54,6 +59,8 @@ export function PlayScreen() {
   const mode = useGameStore((s) => s.mode);
   const keystoneLetter = useGameStore((s) => s.keystoneLetter);
   const defineHint = useGameStore((s) => s.defineHint);
+  const defineTargetWord = useGameStore((s) => s.defineTargetWord);
+  const foundCount = useGameStore((s) => Object.keys(s.discoveredWords).length);
   const hintReveals = useGameStore((s) => s.hintReveals);
   const ladderNextLength = useGameStore((s) => s.ladderNextLength);
   const affixMatch = useGameStore((s) => s.affixMatch);
@@ -91,6 +98,7 @@ export function PlayScreen() {
   const [tierFlash, setTierFlash] = useState(false);
   const cps = totalCps(generators);
   const title = modeDisplayName(mode);
+  const field = isFieldMode(mode);
   const hintCost =
     mode === "define"
       ? HINT_COST_DEFINE_BASE + (hintReveals ?? 0) * HINT_COST_DEFINE_STEP
@@ -174,7 +182,16 @@ export function PlayScreen() {
     draftIndices.filter((x) => x === i).length;
 
   return (
-    <Box sx={{ px: 2, pt: 2, pb: 1 }}>
+    <Box
+      sx={{
+        px: { xs: 2, md: 3 },
+        pt: 2,
+        pb: 1,
+        width: "100%",
+        maxWidth: { xs: "100%", md: 760 },
+        mx: "auto",
+      }}
+    >
       <Stack
         direction="row"
         spacing={1}
@@ -275,7 +292,7 @@ export function PlayScreen() {
               variant="outlined"
             />
           )}
-          <Chip label={`${Math.floor(coins)} ✦`} color="secondary" />
+          {!field && <Chip label={`${Math.floor(coins)} ✦`} color="secondary" />}
           {modeHasIdleShop(mode) && cps > 0 && (
             <Chip label={`${formatCps(cps)}/s`} variant="outlined" size="small" />
           )}
@@ -289,7 +306,7 @@ export function PlayScreen() {
         tierUpFlash={tierFlash}
       />
 
-      {mode === "define" && defineHint && (
+      {(mode === "define" || isFieldMode(mode)) && defineHint && (
         <Alert severity="info" sx={{ mb: 1.5 }} icon={false}>
           <Typography
             variant="caption"
@@ -301,12 +318,30 @@ export function PlayScreen() {
         </Alert>
       )}
 
+      {field && (
+        <PuzzleHint ladder="field" secret={defineTargetWord ?? ""} showPattern />
+      )}
+
       {mode === "daily" && (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          Words must include Keystone {keystoneLetter} (gold outline). Letters are
-          generated from today&apos;s UTC date so every player gets the same board —
-          at least two vowels, keyed for playability. Resets at UTC midnight.
-        </Typography>
+        <>
+          <Typography
+            variant="body2"
+            sx={{
+              mb: 0.75,
+              fontWeight: 800,
+              color: foundCount >= DAILY_GOAL ? "success.main" : "text.primary",
+            }}
+          >
+            {foundCount >= DAILY_GOAL
+              ? `Completed · ${foundCount} words today`
+              : `${foundCount} / ${DAILY_GOAL} today`}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            Words must include Keystone {keystoneLetter} (gold outline). Letters are
+            generated from today&apos;s UTC date so every player gets the same board —
+            at least two vowels, keyed for playability. Resets at UTC midnight.
+          </Typography>
+        </>
       )}
 
       {mode === "ladder" && (
@@ -429,55 +464,140 @@ export function PlayScreen() {
         )}
       </Box>
 
-      <Stack direction="row" spacing={1} sx={{ mb: 1.25 }}>
-        <Button
-          fullWidth
-          variant="outlined"
-          color="inherit"
-          startIcon={<BackspaceRoundedIcon />}
-          onClick={backspaceDraft}
-          disabled={draft.length === 0}
-        >
-          Backspace
-        </Button>
-        <Button
-          fullWidth
-          variant="outlined"
-          color="inherit"
-          startIcon={<ClearAllRoundedIcon />}
-          onClick={clearDraft}
-          disabled={draft.length === 0 && !(comboTier && comboTier >= 3)}
-        >
-          Clear
-        </Button>
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{ display: { xs: "flex", sm: "none" }, mb: 2.5 }}
+      >
+        <Tooltip title="Backspace">
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Button
+              fullWidth
+              aria-label="Backspace"
+              variant="outlined"
+              color="inherit"
+              onClick={backspaceDraft}
+              disabled={draft.length === 0}
+              sx={{ minWidth: 0, px: 0 }}
+            >
+              <BackspaceRoundedIcon />
+            </Button>
+          </Box>
+        </Tooltip>
+        <Tooltip title="Clear">
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Button
+              fullWidth
+              aria-label="Clear"
+              variant="outlined"
+              color="inherit"
+              onClick={clearDraft}
+              disabled={draft.length === 0 && !(comboTier && comboTier >= 3)}
+              sx={{ minWidth: 0, px: 0 }}
+            >
+              <ClearAllRoundedIcon />
+            </Button>
+          </Box>
+        </Tooltip>
+        {!field && (
+          <Tooltip title={`Hint · ${hintCost}✦`}>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Button
+                fullWidth
+                aria-label={`Hint, ${hintCost} coins`}
+                variant="outlined"
+                color="secondary"
+                onClick={onHint}
+                disabled={
+                  coins < hintCost ||
+                  (modeIsTimedRound(mode) && !scrambleRoundActive)
+                }
+                sx={{ minWidth: 0, px: 0 }}
+              >
+                <LightbulbRoundedIcon />
+              </Button>
+            </Box>
+          </Tooltip>
+        )}
+        <Tooltip title="Submit">
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Button
+              fullWidth
+              aria-label="Submit"
+              variant="contained"
+              onClick={onSubmit}
+              disabled={
+                draft.length < MIN_WORD_LENGTH ||
+                (modeIsTimedRound(mode) && !scrambleRoundActive)
+              }
+              sx={{ minWidth: 0, px: 0 }}
+            >
+              <SendRoundedIcon />
+            </Button>
+          </Box>
+        </Tooltip>
       </Stack>
-      <Stack direction="row" spacing={1} sx={{ mb: 2.5 }}>
-        <Button
-          fullWidth
-          variant="outlined"
-          color="secondary"
-          startIcon={<LightbulbRoundedIcon />}
-          onClick={onHint}
-          disabled={
-            coins < hintCost ||
-            (modeIsTimedRound(mode) && !scrambleRoundActive)
-          }
-        >
-          Hint · {hintCost}✦
-        </Button>
-        <Button
-          fullWidth
-          variant="contained"
-          startIcon={<SendRoundedIcon />}
-          onClick={onSubmit}
-          disabled={
-            draft.length < MIN_WORD_LENGTH ||
-            (modeIsTimedRound(mode) && !scrambleRoundActive)
-          }
-        >
-          Submit
-        </Button>
-      </Stack>
+      <Box sx={{ display: { xs: "none", sm: "block" } }}>
+        <Grid container spacing={1} sx={{ mb: 1.25 }}>
+          <Grid size={6}>
+            <Button
+              fullWidth
+              variant="outlined"
+              color="inherit"
+              startIcon={<BackspaceRoundedIcon />}
+              onClick={backspaceDraft}
+              disabled={draft.length === 0}
+            >
+              Backspace
+            </Button>
+          </Grid>
+          <Grid size={6}>
+            <Button
+              fullWidth
+              variant="outlined"
+              color="inherit"
+              startIcon={<ClearAllRoundedIcon />}
+              onClick={clearDraft}
+              disabled={draft.length === 0 && !(comboTier && comboTier >= 3)}
+            >
+              Clear
+            </Button>
+          </Grid>
+        </Grid>
+        <Grid container spacing={1} sx={{ mb: 2.5 }}>
+          {!field && (
+            <Grid size={6}>
+              <Button
+                fullWidth
+                variant="outlined"
+                color="secondary"
+                startIcon={<LightbulbRoundedIcon />}
+                onClick={onHint}
+                disabled={
+                  coins < hintCost ||
+                  (modeIsTimedRound(mode) && !scrambleRoundActive)
+                }
+              >
+                Hint · {hintCost}✦
+              </Button>
+            </Grid>
+          )}
+          <Grid size={field ? 12 : 6}>
+            <Button
+              fullWidth
+              variant="contained"
+              startIcon={<SendRoundedIcon />}
+              onClick={onSubmit}
+              disabled={
+                draft.length < MIN_WORD_LENGTH ||
+                (modeIsTimedRound(mode) && !scrambleRoundActive)
+              }
+            >
+              Submit
+            </Button>
+          </Grid>
+        </Grid>
+      </Box>
 
       <Stack
         direction="row"
@@ -627,7 +747,7 @@ export function PlayScreen() {
             </Typography>
           )}
           <Typography sx={{ mb: 1.5 }} color="text.secondary">
-            Mode score: {totalScore} · Coins: {Math.floor(coins)}
+            Mode score: <Points value={totalScore} /> · Coins: {Math.floor(coins)}
           </Typography>
           {(scrambleRoundWords?.length ?? 0) > 0 ? (
             <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>

@@ -5,7 +5,7 @@ import type {
 } from "@/dictionary/LanguageWorld";
 import { MIN_WORD_LENGTH } from "@/game/constants";
 
-const RARITY: WordRarity[] = ["common", "uncommon", "rare", "epic"];
+const RARITY: WordRarity[] = ["common", "uncommon", "rare", "epic", "legendary"];
 
 type RawEntry = [string, string, number];
 
@@ -29,9 +29,10 @@ let loaded = false;
 
 function ingest(entries: RawEntry[]) {
   byWord.clear();
-  for (const [word, definition, rarityIdx] of entries) {
-    byWord.set(word.toLowerCase(), {
-      word: word.toLowerCase(),
+  for (const [raw, definition, rarityIdx] of entries) {
+    const word = raw.toLowerCase();
+    byWord.set(word, {
+      word,
       definition,
       rarity: RARITY[rarityIdx] ?? "common",
     });
@@ -40,17 +41,29 @@ function ingest(entries: RawEntry[]) {
   EnglishWorld.wordCount = byWord.size;
 }
 
+const DICTIONARY_URL = "/dictionary/english-words.json.gz";
+
+/** Gzip magic, or the JSON array if a proxy already inflated the body. */
+async function readDictionaryEntries(res: Response): Promise<RawEntry[]> {
+  const buf = await res.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const gzipped = bytes.byteLength >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+  const stream = gzipped
+    ? new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))
+    : new Blob([buf]).stream();
+  return (await new Response(stream).json()) as RawEntry[];
+}
+
 /** Fetch full English lexicon from public/ (keeps it out of the JS bundle). */
 export function loadEnglishDictionary(): Promise<void> {
   if (loaded && byWord.size > 0) return Promise.resolve();
   if (loadPromise) return loadPromise;
   loadPromise = (async () => {
-    const res = await fetch("/dictionary/english-words.json");
+    const res = await fetch(DICTIONARY_URL);
     if (!res.ok) {
       throw new Error(`Dictionary HTTP ${res.status}`);
     }
-    const entries = (await res.json()) as RawEntry[];
-    ingest(entries);
+    ingest(await readDictionaryEntries(res));
   })().catch((err) => {
     loadPromise = null;
     throw err;
@@ -83,10 +96,6 @@ export const EnglishWorld: LanguageWorld = {
 
   getRarity(word: string): WordRarity | null {
     return byWord.get(word.trim().toLowerCase())?.rarity ?? null;
-  },
-
-  getEntry(word: string): DictionaryEntry | null {
-    return byWord.get(word.trim().toLowerCase()) ?? null;
   },
 
   listWords(): Iterable<DictionaryEntry> {

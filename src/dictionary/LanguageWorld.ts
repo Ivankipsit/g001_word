@@ -3,7 +3,7 @@
  * English implements this in v1; other languages can plug in later.
  */
 
-export type WordRarity = "common" | "uncommon" | "rare" | "epic";
+export type WordRarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
 
 export interface DictionaryEntry {
   word: string;
@@ -25,7 +25,6 @@ export interface LanguageWorld {
   isValidWord(word: string): boolean;
   getDefinition(word: string): string | null;
   getRarity(word: string): WordRarity | null;
-  getEntry(word: string): DictionaryEntry | null;
   /** Iterate all dictionary entries (for playability checks). */
   listWords(): Iterable<DictionaryEntry>;
   /** Approximate dictionary size for UI */

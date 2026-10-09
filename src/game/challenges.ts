@@ -56,14 +56,14 @@ export function pickAffixStartLetters(
     const n = countFormableWordsFromSet(letters, EnglishWorld, {
       limit: 30,
     });
-    // Soft check: some words containing affix
+    const owned = new Set(letters.map((L) => L.toLowerCase()));
     let affixHits = 0;
     for (const entry of EnglishWorld.listWords()) {
       if (entry.word.length < 3) continue;
       if (!wordHasAffix(entry.word, affixMatch)) continue;
       let ok = true;
-      for (const ch of entry.word.toUpperCase()) {
-        if (!letters.includes(ch)) {
+      for (let i = 0; i < entry.word.length; i++) {
+        if (!owned.has(entry.word[i]!)) {
           ok = false;
           break;
         }
@@ -92,13 +92,14 @@ export function pickRareStartLetters(
       const L = pickWeightedLetter();
       if (!letters.includes(L)) letters.push(L);
     }
+    const owned = new Set(letters.map((L) => L.toLowerCase()));
+    const rare = R.toLowerCase();
     let hits = 0;
     for (const entry of EnglishWorld.listWords()) {
-      if (!entry.word.toUpperCase().includes(R)) continue;
-      if (entry.word.length < 3) continue;
+      if (entry.word.length < 3 || !entry.word.includes(rare)) continue;
       let ok = true;
-      for (const ch of entry.word.toUpperCase()) {
-        if (!letters.includes(ch)) {
+      for (let i = 0; i < entry.word.length; i++) {
+        if (!owned.has(entry.word[i]!)) {
           ok = false;
           break;
         }

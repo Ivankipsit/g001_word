@@ -46,7 +46,8 @@ export function wordQuality(
     opts?.defineSolve ||
     opts?.ladderAdvance ||
     rarity === "rare" ||
-    rarity === "epic"
+    rarity === "epic" ||
+    rarity === "legendary"
   ) {
     return "great";
   }

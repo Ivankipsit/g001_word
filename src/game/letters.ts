@@ -89,7 +89,7 @@ export function countFormableWords(
   if (letters.length === 0) return 0;
   const pool = new Map<string, number>();
   for (const L of letters) {
-    const key = L.toUpperCase();
+    const key = L.toLowerCase();
     pool.set(key, (pool.get(key) ?? 0) + 1);
   }
   const allowed = new Set(pool.keys());
@@ -101,7 +101,7 @@ export function countFormableWords(
     if (w.length < world.minWordLength || w.length > maxLen) continue;
     let ok = true;
     for (let i = 0; i < w.length; i++) {
-      if (!allowed.has(w[i]!.toUpperCase())) {
+      if (!allowed.has(w[i]!)) {
         ok = false;
         break;
       }
@@ -122,17 +122,17 @@ export function countFormableWordsFromSet(
   opts?: { mustInclude?: string; limit?: number },
 ): number {
   if (letters.length === 0) return 0;
-  const allowed = new Set(letters.map((L) => L.toUpperCase()));
-  const must = opts?.mustInclude?.toUpperCase();
+  const allowed = new Set(letters.map((L) => L.toLowerCase()));
+  const must = opts?.mustInclude?.toLowerCase();
   const limit = opts?.limit ?? 500;
   let count = 0;
   for (const entry of world.listWords()) {
     const w = entry.word;
     if (w.length < world.minWordLength) continue;
-    if (must && !w.toUpperCase().includes(must)) continue;
+    if (must && !w.includes(must)) continue;
     let ok = true;
     for (let i = 0; i < w.length; i++) {
-      if (!allowed.has(w[i]!.toUpperCase())) {
+      if (!allowed.has(w[i]!)) {
         ok = false;
         break;
       }
@@ -177,7 +177,8 @@ export function pickKeystoneStartLetters(
 
 function canFormFromPool(word: string, pool: Map<string, number>): boolean {
   const used = new Map<string, number>();
-  for (const ch of word.toUpperCase()) {
+  for (let i = 0; i < word.length; i++) {
+    const ch = word[i]!;
     const need = (used.get(ch) ?? 0) + 1;
     if ((pool.get(ch) ?? 0) < need) return false;
     used.set(ch, need);
@@ -299,6 +300,8 @@ const DAILY_POOL = [
 ] as const;
 const MIN_DAILY_VOWELS = 2;
 const MIN_DAILY_FORMABLE = 40;
+/** Dawn Glyph counts as completed at this many words; every board has at least this many. */
+export const DAILY_GOAL = MIN_DAILY_FORMABLE;
 const MAX_DAILY_RARE = 2;
 
 function vowelCount(letters: string[]): number {
@@ -313,7 +316,7 @@ function rareLetterCount(letters: string[]): number {
 /**
  * Deterministic Daily Keystone board for a UTC date (same for all players).
  * 7 unique letters including 1 key letter; words must include the key.
- * v2: ≥2 vowels, ≤2 rare letters, ≥40 formable words with key.
+ * Rules: ≥2 vowels, ≤2 rare letters, ≥40 formable words with key.
  */
 export function dailyBoardForDate(
   dateUtc: string = utcDateString(),
@@ -372,25 +375,6 @@ export function letterCost(letter: string, levelOrOwned: number): number {
   const rare = EnglishWorld.rareLetters.has(letter.toUpperCase());
   const base = rare ? 80 : letter.match(/[AEIOU]/i) ? 40 : 55;
   return Math.floor(base * Math.pow(1.35, levelOrOwned));
-}
-
-/** Deduplicate preserving order; build levels from multiset counts (v2 migrate). */
-export function uniqueLettersWithLevels(letters: string[]): {
-  letters: string[];
-  letterLevels: Record<string, number>;
-} {
-  const counts = new Map<string, number>();
-  const order: string[] = [];
-  for (const raw of letters) {
-    const L = raw.toUpperCase();
-    if (!counts.has(L)) order.push(L);
-    counts.set(L, (counts.get(L) ?? 0) + 1);
-  }
-  const letterLevels: Record<string, number> = {};
-  for (const L of order) {
-    letterLevels[L] = Math.min(MAX_LETTER_LEVEL, Math.max(1, counts.get(L) ?? 1));
-  }
-  return { letters: order, letterLevels };
 }
 
 export function shuffleArray<T>(arr: T[]): T[] {

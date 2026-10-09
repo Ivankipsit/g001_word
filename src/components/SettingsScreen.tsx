@@ -6,6 +6,8 @@ import {
   Button,
   Divider,
   FormControlLabel,
+  Grid,
+  Link,
   Stack,
   Switch,
   Typography,
@@ -18,8 +20,13 @@ import RestartAltRoundedIcon from "@mui/icons-material/RestartAltRounded";
 import GetAppRoundedIcon from "@mui/icons-material/GetAppRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 import MailRoundedIcon from "@mui/icons-material/MailRounded";
+import ShareRoundedIcon from "@mui/icons-material/ShareRounded";
 import type { User } from "@supabase/supabase-js";
 import { useGameStore } from "@/game/store";
+import { invitePayload } from "@/lib/share";
+import { useShare } from "@/components/useShare";
+import { Points } from "@/components/Points";
+import { AchievementsPanel } from "@/components/AchievementsPanel";
 import { EnglishWorld } from "@/dictionary/english";
 import { SAVE_VERSION, modeDisplayName, type ThemePreference } from "@/game/types";
 import {
@@ -44,6 +51,9 @@ export function SettingsScreen() {
   const mode = useGameStore((s) => s.mode);
   const keystoneLetter = useGameStore((s) => s.keystoneLetter);
   const modes = useGameStore((s) => s.modes);
+  const displayName = useGameStore((s) => s.settings.displayName ?? "");
+  const setDisplayName = useGameStore((s) => s.setDisplayName);
+  const { share, feedback } = useShare();
 
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(
     null,
@@ -128,11 +138,19 @@ export function SettingsScreen() {
     .map(([m]) => modeDisplayName(m as typeof mode));
 
   return (
-    <Box sx={{ px: 2, pt: 2, pb: 2 }}>
+    <Box sx={{ px: { xs: 2, md: 3 }, pt: 2, pb: 2 }}>
       <Typography variant="h5" sx={{ fontWeight: 800, mb: 2 }}>
         Settings
       </Typography>
 
+      <Grid container spacing={2.5}>
+      <Grid size={12}>
+      <Section title="Achievements">
+        <AchievementsPanel />
+      </Section>
+      </Grid>
+
+      <Grid size={{ xs: 12, md: 6 }}>
       <Section title="Appearance">
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Theme is saved with your progress
@@ -158,13 +176,25 @@ export function SettingsScreen() {
           </ToggleButton>
         </ToggleButtonGroup>
       </Section>
+      </Grid>
 
+      <Grid size={{ xs: 12, md: 6 }}>
       <Section title="Account & sync">
+        <TextField
+          label="Display name"
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          fullWidth
+          size="small"
+          autoComplete="nickname"
+          helperText="Shown when you invite friends."
+          slotProps={{ htmlInput: { maxLength: 32 } }}
+          sx={{ mb: 2 }}
+        />
         {!isSupabaseConfigured() ? (
           <Alert severity="info">
             Cloud sync needs <code>NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
-            <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code> (or legacy{" "}
-            <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>) in{" "}
+            <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code> in{" "}
             <code>.env.local</code>. Guests stay local-only.
           </Alert>
         ) : user ? (
@@ -173,7 +203,8 @@ export function SettingsScreen() {
               Signed in as <strong>{user.email}</strong>
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Each mode syncs as its own save (last write wins by time per mode).
+              Each mode syncs as its own save. Words found on different devices in the
+              same run are merged.
             </Typography>
             <Button
               variant="outlined"
@@ -213,7 +244,24 @@ export function SettingsScreen() {
           </Stack>
         )}
       </Section>
+      </Grid>
 
+      <Grid size={{ xs: 12, md: 6 }}>
+      <Section title="Invite friends">
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          Send a link to Word Forge. Your display name is included when set.
+        </Typography>
+        <Button
+          variant="outlined"
+          startIcon={<ShareRoundedIcon />}
+          onClick={() => share(invitePayload(displayName))}
+        >
+          Invite friends
+        </Button>
+      </Section>
+      </Grid>
+
+      <Grid size={{ xs: 12, md: 6 }}>
       <Section title="Sound">
         <FormControlLabel
           control={<Switch checked={soundEnabled} onChange={toggleSound} />}
@@ -223,7 +271,9 @@ export function SettingsScreen() {
           Toggle is saved; audio hooks can plug in later.
         </Typography>
       </Section>
+      </Grid>
 
+      <Grid size={{ xs: 12, md: 6 }}>
       <Section title="Install app (PWA)">
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Install Word Forge on your home screen for faster launch and offline
@@ -250,7 +300,9 @@ export function SettingsScreen() {
           </Typography>
         )}
       </Section>
+      </Grid>
 
+      <Grid size={{ xs: 12, md: 6 }}>
       <Section title="Play mode">
         {started ? (
           <>
@@ -282,12 +334,16 @@ export function SettingsScreen() {
           </Typography>
         )}
       </Section>
+      </Grid>
 
+      <Grid size={{ xs: 12, md: 6 }}>
       <Section title="Progress">
         <Stack spacing={0.5} sx={{ mb: 2 }}>
           {started ? (
             <>
-              <Typography variant="body2">Total score: {totalScore}</Typography>
+              <Typography variant="body2">
+                Total score: <Points value={totalScore} />
+              </Typography>
               <Typography variant="body2">
                 Words discovered: {discovered} /{" "}
                 {EnglishWorld.wordCount.toLocaleString()}
@@ -302,6 +358,57 @@ export function SettingsScreen() {
           <Typography variant="body2">
             Language: {EnglishWorld.displayName} · Save v{SAVE_VERSION}
           </Typography>
+          <Stack spacing={0.25} sx={{ mt: 1 }}>
+            <Typography variant="body2" sx={{ fontWeight: 700 }}>
+              Sources
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              <Link
+                href="https://en.wiktionary.org"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                English Wiktionary
+              </Link>
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              License{" "}
+              <Link
+                href="https://creativecommons.org/licenses/by-sa/4.0/"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                CC BY-SA 4.0
+              </Link>
+              . Wiktionary text is also available under the GNU Free
+              Documentation License.
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Extracted by{" "}
+              <Link
+                href="https://kaikki.org"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                kaikki.org
+              </Link>
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              This game keeps English words of 3 letters or longer and shortens
+              each gloss.
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Rarity tiers use{" "}
+              <Link
+                href="https://norvig.com/ngrams/"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Peter Norvig&apos;s web word counts
+              </Link>
+              .
+            </Typography>
+          </Stack>
         </Stack>
 
         <Divider sx={{ mb: 2 }} />
@@ -338,10 +445,14 @@ export function SettingsScreen() {
             }
           >
             Clears every mode&apos;s letters, coins, lexicon, and generators — back
-            to the mode picker. Theme preference is kept.
+            to the mode picker{user ? ", on this device and in the cloud" : ""}. Theme,
+            achievements, and your daily streak are kept.
           </Alert>
         )}
       </Section>
+      </Grid>
+      </Grid>
+      {feedback}
     </Box>
   );
 }
@@ -354,7 +465,7 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <Box sx={{ mb: 2.5 }}>
+    <Box sx={{ height: "100%" }}>
       <Typography sx={{ fontWeight: 800, mb: 1 }}>{title}</Typography>
       {children}
     </Box>
